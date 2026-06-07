@@ -3673,6 +3673,10 @@ export class BaileysStartupService extends ChannelStartupService {
         return { video: msg?.message?.videoMessage, caption: data.text };
       }
 
+      if (msg?.messageType === 'documentMessage') {
+        return { document: msg?.message?.documentMessage, caption: data.text };
+      }
+
       return null;
     } catch (error) {
       this.logger.error(error);
