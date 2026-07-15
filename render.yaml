@@ -6,7 +6,10 @@ services:
     runtime: docker
     rootDir: okul-kayit-sistemi
     dockerfilePath: ./Dockerfile
-    plan: starter          # kalıcı disk için en az "starter" gerekir (free planda disk yok)
+    # DİKKAT: free planda kalıcı disk YOKTUR; her yeniden başlatmada veritabanı sıfırlanır.
+    # Sadece deneme amaçlıdır. Kalıcı kullanım için: plan'ı "starter" yapın ve aşağıdaki
+    # "disk" bloğunun yorumunu kaldırın.
+    plan: free
     region: frankfurt      # Türkiye'ye en yakın bölge
     branch: claude/school-enrollment-system-07tbms
     healthCheckPath: /api/health
@@ -18,7 +21,8 @@ services:
         generateValue: true   # Render güvenli rastgele değer üretir
       - key: OKUL_ADMIN_SIFRE
         generateValue: true   # admin şifresi: panelde Environment sekmesinden görünür
-    disk:
-      name: okul-data
-      mountPath: /data
-      sizeGB: 1
+    # Kalıcı veri için (starter plan gerektirir) yorumu kaldırın:
+    # disk:
+    #   name: okul-data
+    #   mountPath: /data
+    #   sizeGB: 1
