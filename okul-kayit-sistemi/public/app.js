@@ -442,18 +442,19 @@ async function pageStudents() {
     if (!$('#st-table')) return; // sayfa değişmiş
     $('#st-table').innerHTML = `
       <div class="table-wrap"><table>
-        <thead><tr><th>Öğrenci No</th><th>Ad Soyad</th><th>Sınıf</th><th>Kampüs</th>
+        <thead><tr><th>Öğrenci No</th><th>Ad Soyad</th><th>Bölüm</th><th>Sınıf</th><th>Kampüs</th>
         <th>Veli</th><th>Veli Telefon</th><th>Durum</th></tr></thead>
         <tbody>${d.students.map(s => `
           <tr class="clickable" onclick="location.hash='#/ogrenci/${s.id}'">
             <td>${esc(s.student_no)}</td>
             <td><b>${esc(s.first_name)} ${esc(s.last_name)}</b></td>
+            <td>${esc(s.department_name || '-')}</td>
             <td>${esc(s.grade)}${s.section ? '-' + esc(s.section) : ''}</td>
             <td>${esc(s.campus_name)}</td>
             <td>${esc(s.parent_name || '-')}</td>
             <td>${esc(s.parent_phone || '-')}</td>
             <td>${badge(s.status)}</td>
-          </tr>`).join('') || '<tr><td colspan="7" class="empty">Kayıt bulunamadı</td></tr>'}
+          </tr>`).join('') || '<tr><td colspan="8" class="empty">Kayıt bulunamadı</td></tr>'}
         </tbody></table></div>
       ${pagerHtml(d.page, d.page_size, d.total)}`;
     $('#st-table').querySelectorAll('[data-page]').forEach(b => b.onclick = () => { state.page = Number(b.dataset.page); load(); });
@@ -500,6 +501,7 @@ async function pageStudentDetail(id) {
           <tr><td class="muted" style="width:150px">TC Kimlik No</td><td>${esc(s.tc_no || '-')}</td></tr>
           <tr><td class="muted">Doğum Tarihi / Yeri</td><td>${fmtDate(s.birth_date)} · ${esc(s.birth_place || '-')}</td></tr>
           <tr><td class="muted">Cinsiyet</td><td>${s.gender === 'ERKEK' ? 'Erkek' : s.gender === 'KIZ' ? 'Kız' : '-'}</td></tr>
+          <tr><td class="muted">Bölüm</td><td>${esc(s.department_name || '-')}</td></tr>
           <tr><td class="muted">Sınıf / Şube</td><td>${esc(s.grade)}${s.section ? ' - ' + esc(s.section) : ''}</td></tr>
           <tr><td class="muted">Kan Grubu</td><td>${esc(s.blood_type || '-')}</td></tr>
           <tr><td class="muted">Önceki Okul</td><td>${esc(s.previous_school || '-')}</td></tr>
@@ -535,7 +537,7 @@ async function pageStudentDetail(id) {
     return `
     <div class="card">
       <h3 class="flex">📚 ${esc(e.academic_year_name)} Kaydı ${badge(e.status)}
-        <span class="muted" style="font-weight:400; font-size:12.5px">· ${esc(e.grade)}. sınıf · ${fmtDate(e.enrollment_date)}</span>
+        <span class="muted" style="font-weight:400; font-size:12.5px">· ${e.department_name ? esc(e.department_name) + ' · ' : ''}${esc(e.grade)}-${esc(e.section || '?')} · ${e.enrollment_type === 'DIS_KAYIT' ? 'Dış Kayıt' : e.enrollment_type === 'IC_KAYIT' ? 'İç Kayıt' : 'Nakil'} · ${fmtDate(e.enrollment_date)}</span>
         <span class="spacer"></span>
         ${can('payment.create') && e.status !== 'IPTAL' && e.balance > 0 ? `<button class="btn sm success" data-pay="${e.id}">💰 Tahsilat Al</button>` : ''}
         ${e.status !== 'IPTAL' && openInstallments.length ? `<button class="btn sm secondary" data-senet="${e.id}">📄 Senet Bas</button>` : ''}
@@ -983,8 +985,11 @@ async function pageNewEnrollment() {
         ${yearSelect('ne-year', { allowAll: false })}
         <div class="field"><label>Kayıt Türü</label><select id="ne-type">
           ${META.enrollment_types.map(t => `<option value="${t.value}">${t.label}</option>`).join('')}</select></div>
-        <div class="field"><label>Kayıt Sınıfı</label><select id="ne-grade">
+        <div class="field"><label>Kayıt Sınıfı *</label><select id="ne-grade">
           ${META.grades.map(g => `<option>${g}</option>`).join('')}</select></div>
+        <div class="field"><label>Bölüm *</label><select id="ne-dept"><option value="">Önce öğrenci/kampüs seçin</option></select></div>
+        <div class="field"><label>Şube * <span class="muted" style="font-weight:400">(azami 30 öğrenci)</span></label>
+          <select id="ne-section"><option value="">Önce bölüm seçin</option></select></div>
         <div class="field"><label>Kayıt Tarihi</label><input type="date" id="ne-date" value="${todayStr()}"></div>
         <div class="field"><label>İndirim Gerekçesi</label><input id="ne-discount-reason" placeholder="Kardeş, erken kayıt, burs…"></div>
         <div class="field"><label>Peşinat (TL)</label><input type="number" step="0.01" min="0" id="ne-down" value="0"></div>
@@ -1018,6 +1023,9 @@ async function pageNewEnrollment() {
     $('#tab-new').classList.toggle('active', m === 'new');
     $('#student-existing').style.display = m === 'existing' ? '' : 'none';
     $('#student-new').style.display = m === 'new' ? '' : 'none';
+    // Yeni öğrenci = dış kayıt, mevcut öğrenci = iç kayıt (değiştirilebilir)
+    const typeSel = $('#ne-type');
+    if (typeSel) typeSel.value = m === 'new' ? 'DIS_KAYIT' : 'IC_KAYIT';
     loadItems();
   };
   $('#tab-existing').onclick = () => setMode('existing');
@@ -1112,13 +1120,40 @@ async function pageNewEnrollment() {
     });
   }
 
+  async function loadSections() {
+    const campus = currentCampusId();
+    const year = $('#ne-year')?.value;
+    const dept = $('#ne-dept')?.value;
+    const grade = $('#ne-grade')?.value;
+    const sel = $('#ne-section');
+    if (!sel) return;
+    if (!campus || !year || !dept || !grade) {
+      sel.innerHTML = '<option value="">Önce bölüm seçin</option>';
+      return;
+    }
+    try {
+      const d = await api(`/parameters/sections?campus_id=${campus}&academic_year_id=${year}&department_id=${dept}&grade=${grade}`);
+      if (!$('#ne-section')) return;
+      if (d.plan_missing) {
+        sel.innerHTML = '<option value="">⚠ Şube planı tanımlanmamış (Parametreler)</option>';
+        return;
+      }
+      sel.innerHTML = d.sections.map(x =>
+        `<option value="${x.section}" ${x.full ? 'disabled' : ''}>${x.section} şubesi (${x.current}/${x.capacity})${x.full ? ' - DOLU' : ''}</option>`
+      ).join('') || '<option value="">Şube yok</option>';
+      const firstOpen = d.sections.find(x => !x.full);
+      if (firstOpen) sel.value = firstOpen.section;
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
   async function loadItems() {
     const campus = currentCampusId();
     const year = $('#ne-year').value;
     if (!campus || !year) {
       itemsState = []; limitsState = null;
       $('#ne-items').innerHTML = '<div class="empty">Kalemleri görmek için öğrenci (veya yeni öğrenci sekmesinde kampüs) ve öğretim yılı seçin.</div>';
-      $('#ne-total').textContent = fmtTL(0);
+      $('#ne-dept').innerHTML = '<option value="">Önce öğrenci/kampüs seçin</option>';
+      loadSections();
       return;
     }
     try {
@@ -1131,6 +1166,20 @@ async function pageNewEnrollment() {
         qty: 1, discRate: 0, discAmount: 0,
       }));
       renderItemsTable();
+      // Bölüm listesi
+      const deptSel = $('#ne-dept');
+      const prev = deptSel.value;
+      const active = (d.departments || []).filter(x => x.active);
+      deptSel.innerHTML = active.length
+        ? active.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')
+        : '<option value="">⚠ Bölüm tanımlanmamış (Parametreler)</option>';
+      if (prev && active.some(x => String(x.id) === prev)) deptSel.value = prev;
+      // Öğrencinin mevcut bölümü varsa seç
+      if (mode === 'existing' && selectedStudent?.department_id &&
+          active.some(x => x.id === selectedStudent.department_id)) {
+        deptSel.value = String(selectedStudent.department_id);
+      }
+      await loadSections();
     } catch (e) { toast(e.message, 'error'); }
   }
 
@@ -1196,6 +1245,8 @@ async function pageNewEnrollment() {
     }));
 
   $('#ne-year').onchange = loadItems;
+  $('#ne-dept').onchange = loadSections;
+  $('#ne-grade').onchange = loadSections;
   const sfCampusSel = $('#sf-campus');
   if (sfCampusSel) sfCampusSel.onchange = loadItems;
 
@@ -1254,6 +1305,8 @@ async function pageNewEnrollment() {
           enrollment_type: $('#ne-type').value,
           enrollment_date: $('#ne-date').value,
           grade: $('#ne-grade').value,
+          department_id: Number($('#ne-dept').value) || null,
+          section: $('#ne-section').value,
           items,
           ...planBody(),
           discount_reason: $('#ne-discount-reason').value,
@@ -1541,6 +1594,34 @@ async function pageParameters() {
         <input id="pr-new-item" placeholder="Yeni kalem adı (örn: Etüt Ücreti)" style="max-width:280px">
         <button class="btn sm secondary" id="pr-add-item">+ Kalem Ekle</button>
       </div>` : ''}
+
+      <div class="section-title mt">Bölümler ve Şube Planı</div>
+      <p class="muted" style="font-size:12.5px; margin-bottom:10px">
+        Her bölüm için sınıf kademesinde (9-12) kaç şube açılacağını belirleyin.
+        Şubeler A'dan başlar ve her şubeye en fazla <b>${d.max_class_size}</b> öğrenci kaydedilir.
+        0 veya boş: o kademede şube açılmaz.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Bölüm</th><th>Durum</th>
+          ${d.grades.map(g => `<th class="num" style="width:110px">${g}. Sınıf Şube</th>`).join('')}
+          ${editable ? '<th></th>' : ''}</tr></thead>
+        <tbody>${(d.departments || []).map(dep => `
+          <tr style="${!dep.active ? 'opacity:.55' : ''}">
+            <td><b>${esc(dep.name)}</b></td>
+            <td>${dep.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}</td>
+            ${d.grades.map(g => `<td class="num">
+              <input type="number" min="0" max="10" data-plan="${dep.id}|${g}"
+                value="${d.section_plans[`${dep.id}|${g}`] ?? ''}" placeholder="0"
+                style="width:70px; text-align:right" ${!editable ? 'disabled' : ''}></td>`).join('')}
+            ${editable ? `<td class="right"><button class="btn sm secondary" data-dept-toggle="${dep.id}" data-active="${dep.active}">
+              ${dep.active ? 'Pasifleştir' : 'Aktifleştir'}</button></td>` : ''}
+          </tr>`).join('') || `<tr><td colspan="8" class="empty">Henüz bölüm tanımlanmadı</td></tr>`}
+        </tbody></table></div>
+      ${editable ? `
+      <div class="flex mt">
+        <input id="pr-new-dept" placeholder="Yeni bölüm adı (örn: Bilişim Teknolojileri)" style="max-width:320px">
+        <button class="btn sm secondary" id="pr-add-dept">+ Bölüm Ekle</button>
+      </div>` : ''}
+
       <div class="section-title mt">Kampüs İndirim Sınırları</div>
       <p class="muted" style="font-size:12.5px; margin-bottom:10px">
         Kayıt sırasında bu sınırların üzerinde indirim yapılamaz. Boş bırakılan sınır uygulanmaz.</p>
@@ -1560,12 +1641,16 @@ async function pageParameters() {
         fee_item_id: Number(inp.dataset.price),
         price: inp.value === '' ? null : Number(inp.value),
       }));
+      const section_plans = [...document.querySelectorAll('[data-plan]')].map(inp => {
+        const [deptId, grade] = inp.dataset.plan.split('|');
+        return { department_id: Number(deptId), grade, section_count: inp.value === '' ? 0 : Number(inp.value) };
+      });
       try {
         await api('/parameters', {
           method: 'PUT',
           body: {
             campus_id: Number(campusId()), academic_year_id: Number(yearId()),
-            prices,
+            prices, section_plans,
             max_discount_rate: $('#pr-max-rate').value === '' ? null : Number($('#pr-max-rate').value),
             max_discount_amount: $('#pr-max-amount').value === '' ? null : Number($('#pr-max-amount').value),
           },
@@ -1581,9 +1666,27 @@ async function pageParameters() {
         toast('Kalem eklendi. Fiyatını girip kaydetmeyi unutmayın.', 'success'); load();
       } catch (e) { toast(e.message, 'error'); }
     };
+    $('#pr-add-dept').onclick = async () => {
+      const name = $('#pr-new-dept').value.trim();
+      if (!name) return toast('Bölüm adı yazın.', 'error');
+      try {
+        await api('/parameters/departments', {
+          method: 'POST', body: { campus_id: Number(campusId()), name },
+        });
+        toast('Bölüm eklendi. Şube planını girip kaydetmeyi unutmayın.', 'success'); load();
+      } catch (e) { toast(e.message, 'error'); }
+    };
     document.querySelectorAll('[data-toggle]').forEach(b => b.onclick = async () => {
       try {
         await api('/parameters/items/' + b.dataset.toggle, {
+          method: 'PUT', body: { active: b.dataset.active !== '1' },
+        });
+        load();
+      } catch (e) { toast(e.message, 'error'); }
+    });
+    document.querySelectorAll('[data-dept-toggle]').forEach(b => b.onclick = async () => {
+      try {
+        await api('/parameters/departments/' + b.dataset.deptToggle, {
           method: 'PUT', body: { active: b.dataset.active !== '1' },
         });
         load();

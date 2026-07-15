@@ -18,6 +18,7 @@ const REPORT_DEFS = [
   { key: 'tahsilatlar', name: 'Tahsilat Listesi', desc: 'Tarih aralığına göre alınan tüm ödemeler.' },
   { key: 'geciken-taksitler', name: 'Vadesi Geçen Taksitler', desc: 'Gecikmiş taksitler; veli iletişim bilgileriyle.' },
   { key: 'yaklasan-taksitler', name: 'Yaklaşan Taksitler', desc: 'Önümüzdeki 30 gün içinde vadesi gelecek taksitler.' },
+  { key: 'kayit-yenilemeyenler', name: 'Kayıt Yenilemeyenler', desc: 'Geçen öğretim yılında kayıtlı olup seçilen yıla kayıt yaptırmayan öğrenciler.' },
   { key: 'kampus-ozet', name: 'Kampüs Özet Raporu', desc: 'Kampüs bazında öğrenci, ciro, tahsilat ve gecikme özeti.' },
   { key: 'odeme-turu', name: 'Ödeme Türü Dağılımı', desc: 'Ödeme yöntemlerine göre tahsilat dağılımı.' },
 ];
@@ -40,11 +41,12 @@ function buildWorkbookRows(type, req) {
     case 'ogrenciler': {
       const rows = db.prepare(`
         SELECT s.student_no, s.tc_no, s.first_name, s.last_name, s.gender, s.birth_date,
-          s.grade, s.section, s.status, c.name AS campus, s.city, s.district, s.address,
+          s.grade, s.section, s.status, c.name AS campus, dp.name AS department, s.city, s.district, s.address,
           (SELECT p.full_name FROM parents p WHERE p.student_id = s.id ORDER BY p.is_primary DESC, p.id LIMIT 1) AS parent_name,
           (SELECT p.phone FROM parents p WHERE p.student_id = s.id ORDER BY p.is_primary DESC, p.id LIMIT 1) AS parent_phone,
           (SELECT p.email FROM parents p WHERE p.student_id = s.id ORDER BY p.is_primary DESC, p.id LIMIT 1) AS parent_email
         FROM students s JOIN campuses c ON c.id = s.campus_id
+        LEFT JOIN departments dp ON dp.id = s.department_id
         WHERE 1=1 ${campusWhereS} ${q.status ? 'AND s.status = @status' : ''}
         ORDER BY c.name, s.last_name, s.first_name`)
         .all(q.status ? { ...params, status: q.status } : params);
@@ -57,6 +59,7 @@ function buildWorkbookRows(type, req) {
           { header: 'Soyadı', key: 'last_name', width: 16 },
           { header: 'Cinsiyet', key: 'gender', width: 10 },
           { header: 'Doğum Tarihi', key: 'birth_date', width: 13 },
+          { header: 'Bölüm', key: 'department', width: 26 },
           { header: 'Sınıf', key: 'grade', width: 9 },
           { header: 'Şube', key: 'section', width: 7 },
           { header: 'Durum', key: 'status', width: 12 },
@@ -74,7 +77,7 @@ function buildWorkbookRows(type, req) {
     case 'kayitlar': {
       const rows = db.prepare(`
         SELECT s.student_no, s.first_name || ' ' || s.last_name AS student, c.name AS campus,
-          ay.name AS year, e.grade, e.enrollment_date, e.enrollment_type,
+          ay.name AS year, dp.name AS department, e.grade, e.section, e.enrollment_date, e.enrollment_type,
           e.list_fee, e.discount_rate, e.discount_amount, e.net_fee,
           (SELECT COALESCE(SUM(p.amount),0) FROM payments p WHERE p.enrollment_id = e.id AND p.cancelled = 0) AS paid,
           e.installment_count, e.default_payment_method, e.status, e.payer_name, e.payer_phone
@@ -82,6 +85,7 @@ function buildWorkbookRows(type, req) {
         JOIN students s ON s.id = e.student_id
         JOIN campuses c ON c.id = e.campus_id
         JOIN academic_years ay ON ay.id = e.academic_year_id
+        LEFT JOIN departments dp ON dp.id = e.department_id
         WHERE 1=1 ${campusWhereE} ${yearWhere}
         ORDER BY c.name, s.last_name`).all(params);
       return {
@@ -91,7 +95,9 @@ function buildWorkbookRows(type, req) {
           { header: 'Öğrenci', key: 'student', width: 24 },
           { header: 'Kampüs', key: 'campus', width: 22 },
           { header: 'Öğretim Yılı', key: 'year', width: 12 },
+          { header: 'Bölüm', key: 'department', width: 26 },
           { header: 'Sınıf', key: 'grade', width: 9 },
+          { header: 'Şube', key: 'section', width: 7 },
           { header: 'Kayıt Tarihi', key: 'enrollment_date', width: 13 },
           { header: 'Kayıt Türü', key: 'enrollment_type', width: 14 },
           { header: 'Liste Ücreti', key: 'list_fee', width: 14, money: true },
@@ -109,7 +115,7 @@ function buildWorkbookRows(type, req) {
         rows: rows.map(r => ({
           ...r,
           balance: money(r.net_fee - r.paid),
-          enrollment_type: r.enrollment_type === 'YENI_KAYIT' ? 'Yeni Kayıt' : r.enrollment_type === 'KAYIT_YENILEME' ? 'Kayıt Yenileme' : 'Nakil',
+          enrollment_type: r.enrollment_type === 'DIS_KAYIT' ? 'Dış Kayıt' : r.enrollment_type === 'IC_KAYIT' ? 'İç Kayıt' : 'Nakil',
           default_payment_method: METHOD_LABELS[r.default_payment_method] || r.default_payment_method,
           status: STATUS_LABELS[r.status] || r.status,
         })),
@@ -195,6 +201,55 @@ function buildWorkbookRows(type, req) {
         columns: cols,
         rows: rows.map(r => ({ ...r, remaining: money(r.amount - r.paid_amount) })),
         sumColumn: 'remaining',
+      };
+    }
+    case 'kayit-yenilemeyenler': {
+      // Hedef yıl: seçilen ya da aktif yıl; önceki yıl: başlangıcı ondan önceki en yakın yıl
+      const targetYear = q.academic_year_id
+        ? db.prepare('SELECT * FROM academic_years WHERE id = ?').get(Number(q.academic_year_id))
+        : db.prepare('SELECT * FROM academic_years WHERE active = 1').get();
+      if (!targetYear) return { title: 'Kayıt Yenilemeyenler', columns: [{ header: 'Bilgi', key: 'x', width: 40 }], rows: [] };
+      const prevYear = db.prepare(
+        'SELECT * FROM academic_years WHERE start_date < ? ORDER BY start_date DESC LIMIT 1'
+      ).get(targetYear.start_date);
+      if (!prevYear) return { title: 'Kayıt Yenilemeyenler', columns: [{ header: 'Bilgi', key: 'x', width: 40 }], rows: [] };
+      params.targetYear = targetYear.id;
+      params.prevYear = prevYear.id;
+      const rows = db.prepare(`
+        SELECT s.student_no, s.first_name || ' ' || s.last_name AS student, c.name AS campus,
+          dp.name AS department, pe.grade AS prev_grade, pe.section AS prev_section,
+          pe.net_fee AS prev_net,
+          (SELECT COALESCE(SUM(p.amount),0) FROM payments p WHERE p.enrollment_id = pe.id AND p.cancelled = 0) AS prev_paid,
+          (SELECT pr.full_name FROM parents pr WHERE pr.student_id = s.id ORDER BY pr.is_primary DESC, pr.id LIMIT 1) AS parent_name,
+          (SELECT pr.phone FROM parents pr WHERE pr.student_id = s.id ORDER BY pr.is_primary DESC, pr.id LIMIT 1) AS parent_phone
+        FROM students s
+        JOIN campuses c ON c.id = s.campus_id
+        JOIN enrollments pe ON pe.student_id = s.id AND pe.academic_year_id = @prevYear AND pe.status != 'IPTAL'
+        LEFT JOIN departments dp ON dp.id = pe.department_id
+        WHERE s.status = 'AKTIF'
+          AND NOT EXISTS (
+            SELECT 1 FROM enrollments ne
+            WHERE ne.student_id = s.id AND ne.academic_year_id = @targetYear AND ne.status != 'IPTAL')
+          AND pe.grade != '12'
+          ${campusWhereS}
+        ORDER BY c.name, s.last_name`).all(params);
+      return {
+        title: `Kayıt Yenilemeyenler (${prevYear.name} → ${targetYear.name})`,
+        columns: [
+          { header: 'Öğrenci No', key: 'student_no', width: 16 },
+          { header: 'Öğrenci', key: 'student', width: 24 },
+          { header: 'Kampüs', key: 'campus', width: 22 },
+          { header: 'Bölüm', key: 'department', width: 26 },
+          { header: 'Geçen Yıl Sınıfı', key: 'prev_grade', width: 14 },
+          { header: 'Şube', key: 'prev_section', width: 7 },
+          { header: 'Geçen Yıl Ücreti', key: 'prev_net', width: 15, money: true },
+          { header: 'Geçen Yıl Ödenen', key: 'prev_paid', width: 15, money: true },
+          { header: 'Geçen Yıl Bakiye', key: 'prev_balance', width: 15, money: true },
+          { header: 'Veli', key: 'parent_name', width: 22 },
+          { header: 'Veli Telefon', key: 'parent_phone', width: 15 },
+        ],
+        rows: rows.map(r => ({ ...r, prev_balance: money(r.prev_net - r.prev_paid) })),
+        sumColumn: 'prev_balance',
       };
     }
     case 'kampus-ozet': {

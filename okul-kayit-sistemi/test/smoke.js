@@ -128,7 +128,7 @@ async function main() {
       token: campusToken,
       body: {
         first_name: 'Test', last_name: 'Öğrenci', campus_id: campusId,
-        tc_no: '99988877766', gender: 'KIZ', grade: '5', section: 'A',
+        tc_no: '99988877766', gender: 'KIZ', grade: '10',
         birth_date: '2015-03-10', city: 'İstanbul', district: 'Fatih',
         parents: [
           { relation: 'ANNE', full_name: 'Test Anne', phone: '0532 111 22 33', is_primary: true },
@@ -163,9 +163,9 @@ async function main() {
     assert.equal(r.data.plan.length, 8); // peşinat + 7 taksit
   });
 
-  let activeYearId, pricedItems, expectedNet;
+  let activeYearId, pricedItems, expectedNet, depts, freePlacement;
 
-  await test('Parametreler: ilan listesi seed ile hazır', async () => {
+  await test('Parametreler: ilan listesi, bölümler ve şube planı seed ile hazır', async () => {
     const meta = await req('GET', '/meta', { token: campusToken });
     activeYearId = meta.data.academic_years.find(y => y.active).id;
     const r = await req('GET', `/parameters?academic_year_id=${activeYearId}`, { token: campusToken });
@@ -174,6 +174,24 @@ async function main() {
     assert.ok(pricedItems.length >= 6, 'tüm kalemlerin ilan fiyatı olmalı');
     assert.equal(r.data.limits.max_discount_rate, 25);
     assert.equal(r.data.limits.max_discount_amount, 100000);
+    depts = r.data.departments;
+    assert.equal(depts.length, 5, 'kampüste 5 bölüm olmalı');
+    assert.equal(r.data.section_plans[`${depts[0].id}|9`], 5, '9. sınıf şube planı 5 olmalı');
+    assert.equal(r.data.max_class_size, 30);
+  });
+
+  await test('Şube doluluk sorgusu: dolu ve boş şubeler görünür', async () => {
+    const r = await req('GET',
+      `/parameters/sections?academic_year_id=${activeYearId}&department_id=${depts[0].id}&grade=10`,
+      { token: campusToken });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.sections.length, 5);
+    const fullOnes = r.data.sections.filter(s => s.full);
+    const openOnes = r.data.sections.filter(s => !s.full);
+    assert.ok(fullOnes.length >= 1, 'seed sonrasında dolu şube olmalı');
+    assert.ok(openOnes.length >= 1, 'boş şube kalmalı');
+    assert.ok(r.data.sections.every(s => s.current <= 30), '30 üstü şube olamaz');
+    freePlacement = { grade: '10', department_id: depts[0].id, section: openOnes[0].section };
   });
 
   await test('Kayıt oluşturma (kalem bazlı indirim: eğitim %15, yemek 5000 TL)', async () => {
@@ -187,7 +205,7 @@ async function main() {
       token: campusToken,
       body: {
         student_id: studentId, academic_year_id: activeYearId,
-        enrollment_type: 'YENI_KAYIT', grade: '5',
+        enrollment_type: 'IC_KAYIT', ...freePlacement,
         items: [
           { fee_item_id: egitim.id, quantity: 1, discount_rate: 15 },
           { fee_item_id: yemek.id, quantity: 1, discount_amount: 5000 },
@@ -224,7 +242,7 @@ async function main() {
     const r = await req('POST', '/enrollments', {
       token: campusToken,
       body: {
-        student_id: s.data.id, academic_year_id: activeYearId,
+        student_id: s.data.id, academic_year_id: activeYearId, ...freePlacement,
         items: [{ fee_item_id: pricedItems[1].id, quantity: 1, discount_amount: pricedItems[1].price + 1000 }],
         installment_count: 3, first_due_date: '2026-09-15',
       },
@@ -247,10 +265,18 @@ async function main() {
     });
     const r = await req('POST', '/enrollments', {
       token: campusToken,
-      body: { student_id: s.data.id, academic_year_id: activeYearId, installment_count: 5, first_due_date: '2026-09-15' },
+      body: { student_id: s.data.id, academic_year_id: activeYearId, ...freePlacement, installment_count: 5, first_due_date: '2026-09-15' },
     });
     assert.equal(r.status, 400);
     assert.ok(/kalem/i.test(r.data.error), r.data.error);
+    // bölümsüz kayıt da reddedilir
+    const r2 = await req('POST', '/enrollments', {
+      token: campusToken,
+      body: { student_id: s.data.id, academic_year_id: activeYearId, grade: '10',
+        items: [{ fee_item_id: pricedItems[0].id }], installment_count: 5, first_due_date: '2026-09-15' },
+    });
+    assert.equal(r2.status, 400);
+    assert.ok(/bölüm/i.test(r2.data.error), r2.data.error);
   });
 
   await test('İndirim sınırı: azami toplam oran (%25) aşılırsa kayıt reddedilir', async () => {
@@ -258,7 +284,7 @@ async function main() {
       token: campusToken, body: { first_name: 'İndirim', last_name: 'Sınırı', campus_id: campusId },
     });
     const mk = itemDiscount => ({
-      student_id: s.data.id, academic_year_id: activeYearId,
+      student_id: s.data.id, academic_year_id: activeYearId, ...freePlacement,
       items: [{ fee_item_id: pricedItems[0].id, quantity: 1, ...itemDiscount }],
       installment_count: 5, first_due_date: '2026-09-15',
     });
@@ -281,7 +307,7 @@ async function main() {
     const r = await req('POST', '/enrollments', {
       token: campusToken,
       body: {
-        student_id: s.data.id, academic_year_id: activeYearId,
+        student_id: s.data.id, academic_year_id: activeYearId, ...freePlacement,
         items: [{ fee_item_id: pricedItems[0].id, quantity: 2, discount_amount: 110000 }],
         installment_count: 5, first_due_date: '2026-09-15',
       },
@@ -509,7 +535,7 @@ async function main() {
     const e = await req('POST', '/enrollments', {
       token: campusToken,
       body: {
-        student_id: s.data.id, academic_year_id: activeYearId,
+        student_id: s.data.id, academic_year_id: activeYearId, ...freePlacement,
         items: [{ fee_item_id: pricedItems[0].id, quantity: 1 }],
         installment_count: 5, first_due_date: '2026-09-15',
       },
@@ -525,6 +551,97 @@ async function main() {
       token: muhasebeToken, body: { enrollment_id: e.data.id, amount: 100, method: 'NAKIT' },
     });
     assert.equal(pay.status, 400);
+  });
+
+  await test('Şube kapasitesi: 30 öğrenci sınırı aşılamaz', async () => {
+    // dept[1] / 9. sınıf: seed'de A-D dolu, E boş -> E'yi 30'a kadar doldur
+    const secR = await req('GET',
+      `/parameters/sections?academic_year_id=${activeYearId}&department_id=${depts[1].id}&grade=9`,
+      { token: campusToken });
+    const openSec = secR.data.sections.find(x => !x.full);
+    assert.ok(openSec, 'boş şube olmalı');
+    const room = openSec.capacity - openSec.current;
+    const mkEnroll = async () => {
+      const s = await req('POST', '/students', {
+        token: campusToken, body: { first_name: 'Kapasite', last_name: 'Testi', campus_id: campusId },
+      });
+      return req('POST', '/enrollments', {
+        token: campusToken,
+        body: {
+          student_id: s.data.id, academic_year_id: activeYearId,
+          grade: '9', department_id: depts[1].id, section: openSec.section,
+          items: [{ fee_item_id: pricedItems[0].id }], installment_count: 5, first_due_date: '2026-09-15',
+        },
+      });
+    };
+    for (let i = 0; i < room; i++) {
+      const r = await mkEnroll();
+      assert.equal(r.status, 200, `${i + 1}. kayıt başarısız: ${JSON.stringify(r.data)}`);
+    }
+    const overflow = await mkEnroll();
+    assert.equal(overflow.status, 400);
+    assert.ok(/dolu/i.test(overflow.data.error), overflow.data.error);
+    // doluluk sorgusu da şubeyi dolu göstermeli
+    const after = await req('GET',
+      `/parameters/sections?academic_year_id=${activeYearId}&department_id=${depts[1].id}&grade=9`,
+      { token: campusToken });
+    assert.ok(after.data.sections.find(x => x.section === openSec.section).full);
+  });
+
+  await test('Bölüm/şube değişikliği: kayıt güncellenir, öğrenci senkronlanır', async () => {
+    // test öğrencimizin (enrollmentId) bölümünü değiştir
+    const secR = await req('GET',
+      `/parameters/sections?academic_year_id=${activeYearId}&department_id=${depts[2].id}&grade=10`,
+      { token: campusToken });
+    const open = secR.data.sections.find(x => !x.full);
+    const r = await req('PUT', '/enrollments/' + enrollmentId, {
+      token: campusToken,
+      body: { department_id: depts[2].id, section: open.section },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const d = await req('GET', '/students/' + studentId, { token: campusToken });
+    assert.equal(d.data.student.department_id, depts[2].id, 'öğrenci kartı senkronlanmalı');
+    assert.equal(d.data.student.section, open.section);
+  });
+
+  await test('Yeni bölüm eklenip şube planı tanımlanabilir', async () => {
+    const r = await req('POST', '/parameters/departments', {
+      token: hqToken, body: { campus_id: campusId, name: 'Yenilenebilir Enerji Teknolojileri' },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const upd = await req('PUT', '/parameters', {
+      token: hqToken,
+      body: {
+        campus_id: campusId, academic_year_id: activeYearId,
+        section_plans: [{ department_id: r.data.id, grade: '9', section_count: 2 }],
+      },
+    });
+    assert.equal(upd.status, 200);
+    const sec = await req('GET',
+      `/parameters/sections?campus_id=${campusId}&academic_year_id=${activeYearId}&department_id=${r.data.id}&grade=9`,
+      { token: hqToken });
+    assert.equal(sec.data.sections.length, 2);
+    assert.ok(sec.data.sections.every(x => x.current === 0));
+    // kampüs müdürü bölüm ekleyemez (settings.manage yok)
+    const denied = await req('POST', '/parameters/departments', {
+      token: campusToken, body: { campus_id: campusId, name: 'X Bölümü' },
+    });
+    assert.equal(denied.status, 403);
+  });
+
+  await test('Kayıt yenilemeyenler raporu: geçen yıl kayıtlı, bu yıl kayıtsız', async () => {
+    const r = await req('GET', `/reports/kayit-yenilemeyenler/preview?academic_year_id=${activeYearId}`, { token: hqToken });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.ok(r.data.total_rows > 1500, `yenilemeyen sayısı: ${r.data.total_rows}`);
+    // kampüs müdürü yalnız kendi kampüsünü görür
+    const rc = await req('GET', `/reports/kayit-yenilemeyenler/preview?academic_year_id=${activeYearId}`, { token: campusToken });
+    assert.ok(rc.data.total_rows < r.data.total_rows);
+    assert.ok(rc.data.total_rows > 300, `kampüs yenilemeyen: ${rc.data.total_rows}`);
+    // Excel de inmeli
+    const xls = await req('GET', `/reports/kayit-yenilemeyenler/excel?academic_year_id=${activeYearId}`, { token: hqToken, raw: true });
+    assert.equal(xls.status, 200);
+    const buf = Buffer.from(await xls.arrayBuffer());
+    assert.ok(buf.length > 10000);
   });
 
   await test('Denetim kaydı tutulur', async () => {

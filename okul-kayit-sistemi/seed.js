@@ -46,8 +46,10 @@ const OCCUPATIONS = ['Mühendis', 'Öğretmen', 'Doktor', 'Avukat', 'Esnaf', 'Me
   'Mimar', 'Muhasebeci', 'Serbest Meslek', 'Yönetici', 'Eczacı', 'Polis', 'Ev Hanımı', 'Akademisyen'];
 const DISTRICTS = ['Kadıköy', 'Üsküdar', 'Beşiktaş', 'Şişli', 'Bakırköy', 'Maltepe', 'Kartal', 'Pendik',
   'Ataşehir', 'Beylikdüzü', 'Başakşehir', 'Fatih', 'Zeytinburnu', 'Bahçelievler', 'Sarıyer'];
-const GRADES = ['Anaokulu', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
-const SECTIONS = ['A', 'B', 'C', 'D'];
+const GRADES = ['9', '10', '11', '12'];
+const SECTIONS = ['A', 'B', 'C', 'D', 'E'];
+const DEPARTMENTS = ['Bilişim Teknolojileri', 'Elektrik-Elektronik Teknolojisi', 'Makine Teknolojisi',
+  'Muhasebe ve Finansman', 'Sağlık Hizmetleri'];
 const METHODS = ['NAKIT', 'KREDI_KARTI', 'KREDI_KARTI', 'KREDI_KARTI', 'HAVALE_EFT', 'HAVALE_EFT', 'KMH', 'SENET', 'CEK', 'NAKIT'];
 
 function fakeTc() {
@@ -69,22 +71,19 @@ function addMonths(iso, n) {
   return dt.toISOString().slice(0, 10);
 }
 
-function gradeFee(grade) {
-  if (grade === 'Anaokulu') return rint(110, 140) * 1000;
-  if (Number(grade) <= 4) return rint(160, 200) * 1000;
-  if (Number(grade) <= 8) return rint(180, 220) * 1000;
-  return rint(210, 260) * 1000;
+function gradeFee() {
+  return rint(210, 260) * 1000; // lise eğitim ücreti bandı
 }
 
 console.time('seed');
 
 // ---- Kampüsler ----
 const CAMPUSES = [
-  { code: 'MRK', name: 'Merkez Kampüs', district: 'Fatih' },
-  { code: 'AND', name: 'Anadolu Kampüsü', district: 'Ataşehir' },
-  { code: 'AVR', name: 'Avrupa Kampüsü', district: 'Beylikdüzü' },
-  { code: 'GOL', name: 'Göl Kampüsü', district: 'Küçükçekmece' },
-  { code: 'SHL', name: 'Sahil Kampüsü', district: 'Maltepe' },
+  { code: 'MRK', name: 'İkitelli OSB', district: 'Başakşehir' },
+  { code: 'IST', name: 'İstanbul OSB', district: 'Başakşehir' },
+  { code: 'ESN', name: 'Esenyurt', district: 'Esenyurt' },
+  { code: 'KRC', name: 'Kıraç', district: 'Esenyurt' },
+  { code: 'CRL', name: 'Çorlu', district: 'Çorlu / Tekirdağ' },
 ];
 const insCampus = db.prepare(
   'INSERT INTO campuses (code, name, address, phone, manager_name) VALUES (?, ?, ?, ?, ?)');
@@ -115,6 +114,22 @@ const insYear = db.prepare(
 const YEAR_2025 = Number(insYear.run('2025-2026', '2025-09-08', '2026-06-19', 0).lastInsertRowid);
 const YEAR_2026 = Number(insYear.run('2026-2027', '2026-09-07', '2027-06-18', 1).lastInsertRowid);
 
+// ---- Bölümler ve şube planları ----
+const insDept = db.prepare('INSERT INTO departments (campus_id, name) VALUES (?, ?)');
+const insPlan = db.prepare(
+  'INSERT INTO section_plans (campus_id, academic_year_id, department_id, grade, section_count) VALUES (?, ?, ?, ?, ?)');
+const campusDepts = {}; // campus_id -> [deptId...]
+for (const c of campusIds) {
+  campusDepts[c.id] = [];
+  for (const name of DEPARTMENTS) {
+    const deptId = Number(insDept.run(c.id, name).lastInsertRowid);
+    campusDepts[c.id].push(deptId);
+    for (const yearId of [YEAR_2025, YEAR_2026]) {
+      for (const g of GRADES) insPlan.run(c.id, yearId, deptId, g, SECTIONS.length);
+    }
+  }
+}
+
 // ---- MEB ilan listeleri (kampüs + yıl bazında liste fiyatları ve indirim sınırları) ----
 const feeItems = db.prepare('SELECT id, name FROM fee_items ORDER BY sort_order, id').all();
 const BASE_PRICES = {
@@ -138,16 +153,16 @@ for (const c of campusIds) {
 // ---- Öğrenciler + kayıtlar + taksitler + tahsilatlar ----
 const insStudent = db.prepare(`
   INSERT INTO students (student_no, tc_no, first_name, last_name, birth_date, birth_place, gender,
-    blood_type, campus_id, grade, section, address, city, district, status, created_by)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    blood_type, campus_id, department_id, grade, section, address, city, district, status, created_by)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 const insParent = db.prepare(`
   INSERT INTO parents (student_id, relation, full_name, tc_no, phone, email, occupation, workplace, address, is_primary)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 const insEnrollment = db.prepare(`
   INSERT INTO enrollments (student_id, academic_year_id, campus_id, enrollment_date, enrollment_type,
-    grade, list_fee, discount_rate, discount_amount, discount_reason, net_fee, down_payment,
+    grade, department_id, section, list_fee, discount_rate, discount_amount, discount_reason, net_fee, down_payment,
     installment_count, default_payment_method, payer_name, payer_phone, status, created_by)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 const insInstallment = db.prepare(`
   INSERT INTO installments (enrollment_id, seq_no, label, due_date, amount, paid_amount, status)
   VALUES (?, ?, ?, ?, ?, ?, ?)`);
@@ -170,7 +185,7 @@ function nextReceipt(code) {
  * Bir kayıt için taksit planı üretir, geçmiş vadeleri ödenmiş/gecikmiş olarak işaretler.
  * payBehavior: 0 => tümü ödendi, 1 => son 1-2 taksit gecikmiş, 2 => düzensiz ödeyen
  */
-function createEnrollment(studentId, campus, yearId, grade, enrollDate, type, firstDue, count, payBehavior, userIds, parentName, parentPhone) {
+function createEnrollment(studentId, campus, yearId, grade, deptId, section, enrollDate, type, firstDue, count, payBehavior, userIds, parentName, parentPhone) {
   const listFee = gradeFee(grade);
   const discountRate = pick([0, 0, 0, 5, 10, 10, 15, 20, 25]);
   const discountAmount = money(listFee * discountRate / 100);
@@ -180,7 +195,7 @@ function createEnrollment(studentId, campus, yearId, grade, enrollDate, type, fi
   const reason = discountRate > 0 ? pick(DISCOUNT_REASONS.slice(3)) : '';
 
   const eid = Number(insEnrollment.run(studentId, yearId, campus.id, enrollDate, type, String(grade),
-    listFee, discountRate, discountAmount, reason, netFee, downPayment, count, method,
+    deptId, section, listFee, discountRate, discountAmount, reason, netFee, downPayment, count, method,
     parentName, parentPhone, 'AKTIF', userIds[1]).lastInsertRowid);
 
   const remaining = money(netFee - downPayment);
@@ -217,28 +232,69 @@ function createEnrollment(studentId, campus, yearId, grade, enrollDate, type, fi
   return eid;
 }
 
+// Şube atama sayaçları: aynı (yıl, bölüm, sınıf) içinde şubeler 30'ar 30'ar dolar
+const sectionCounters = {};
+function assignSection(campusId, yearId, deptId, grade) {
+  const key = `${campusId}|${yearId}|${deptId}|${grade}`;
+  const idx = sectionCounters[key] || 0;
+  sectionCounters[key] = idx + 1;
+  return SECTIONS[Math.min(Math.floor(idx / 30), SECTIONS.length - 1)];
+}
+
 const seedAll = db.transaction(() => {
   const perCampus = Math.floor(STUDENT_COUNT / campusIds.length);
+  const currentCount = Math.floor(perCampus * 0.80);   // aktif + bu yıl kayıtlı
+  const nonRenewCount = Math.floor(perCampus * 0.133); // kayıt yenilemeyen
   let counter = 0;
   for (const campus of CAMPUSES.map((c, i) => campusIds[i])) {
     const userIds = campusUserIds[campus.id];
+    const depts = campusDepts[campus.id];
     for (let n = 0; n < perCampus; n++) {
       counter++;
       const gender = rnd() < 0.5 ? 'ERKEK' : 'KIZ';
       const first = gender === 'ERKEK' ? pick(MALE_NAMES) : pick(FEMALE_NAMES);
       const last = pick(SURNAMES);
-      const grade = pick(GRADES);
-      const gradeNum = grade === 'Anaokulu' ? 0 : Number(grade);
-      const birthYear = 2026 - (5 + gradeNum + rint(0, 1));
+      const deptId = depts[n % depts.length];
+
+      // Kategori ve sınıf ataması
+      let category, grade;
+      if (n < currentCount) {
+        category = 'current';
+        grade = GRADES[Math.floor(n / depts.length) % GRADES.length]; // 9-12 dengeli
+      } else if (n < currentCount + nonRenewCount) {
+        category = 'nonrenew';
+        grade = GRADES[n % 3]; // geçen yıl 9-11 okuyordu, yenilemedi
+      } else {
+        category = 'graduate';
+        grade = '12'; // geçen yıl mezun oldu
+      }
+      const gradeNum = Number(grade);
+      const birthYear = 2026 - (6 + gradeNum + rint(0, 1));
       const district = pick(DISTRICTS);
       const studentNo = `${campus.code}-2025-${String(n + 1).padStart(5, '0')}`;
+
+      // Öğrenci kartındaki güncel yerleşim
+      let studentGrade, studentSection, status;
+      if (category === 'current') {
+        studentGrade = grade;
+        studentSection = assignSection(campus.id, YEAR_2026, deptId, grade);
+        status = 'AKTIF';
+      } else if (category === 'nonrenew') {
+        studentGrade = grade; // son bilinen sınıfı (geçen yıl)
+        studentSection = assignSection(campus.id, YEAR_2025, deptId, grade);
+        status = 'AKTIF'; // yenilemedi ama kaydı silinmedi -> raporda görünür
+      } else {
+        studentGrade = '12';
+        studentSection = assignSection(campus.id, YEAR_2025, deptId, '12');
+        status = 'MEZUN';
+      }
 
       const sid = Number(insStudent.run(studentNo, fakeTc(), first, last,
         dateStr(birthYear, rint(1, 12), rint(1, 28)), 'İstanbul', gender,
         pick(['A Rh+', 'A Rh-', 'B Rh+', '0 Rh+', '0 Rh-', 'AB Rh+', '']),
-        campus.id, grade, pick(SECTIONS),
+        campus.id, deptId, studentGrade, studentSection,
         `${district} Mah. ${rint(1, 99)}. Sok. No:${rint(1, 60)}`, 'İstanbul', district,
-        'AKTIF', userIds[1]).lastInsertRowid);
+        status, userIds[1]).lastInsertRowid);
 
       const motherName = `${pick(FEMALE_NAMES)} ${last}`;
       const fatherName = `${pick(MALE_NAMES)} ${last}`;
@@ -254,18 +310,32 @@ const seedAll = db.transaction(() => {
       const payerName = primaryIsMother ? motherName : fatherName;
       const payerPhone = primaryIsMother ? motherPhone : fatherPhone;
 
-      // 2025-2026 kaydı (geçmiş yıl): %78 tamamen ödendi, %15 gecikmeli, %7 sorunlu
+      // Geçmiş yıl ödeme davranışı: %78 tam, %15 gecikmeli, %7 sorunlu
       const behavior = rnd() < 0.78 ? 0 : rnd() < 0.68 ? 1 : 2;
-      const prevGrade = gradeNum <= 1 ? 'Anaokulu' : String(gradeNum - 1);
-      createEnrollment(sid, campus, YEAR_2025, prevGrade,
-        dateStr(2025, rint(5, 8), rint(1, 28)), 'YENI_KAYIT', '2025-09-15', rint(8, 10), behavior, userIds,
-        payerName, payerPhone);
 
-      // %72'si 2026-2027 için kayıt yeniledi (gelecek taksitler)
-      if (rnd() < 0.72) {
-        createEnrollment(sid, campus, YEAR_2026, grade,
-          dateStr(2026, rint(5, 7), rint(1, 14)), 'KAYIT_YENILEME', dateStr(2026, 8, rint(1, 28)), rint(9, 10), 0, userIds,
-          payerName, payerPhone);
+      if (category === 'current') {
+        if (gradeNum === 9) {
+          // Bu yıl DIŞ KAYIT (okula yeni girdi) - geçmiş yıl kaydı yok
+          createEnrollment(sid, campus, YEAR_2026, grade, deptId, studentSection,
+            dateStr(2026, rint(5, 7), rint(1, 14)), 'DIS_KAYIT', dateStr(2026, 8, rint(1, 28)),
+            rint(9, 10), 0, userIds, payerName, payerPhone);
+        } else {
+          // Geçen yıl bir alt sınıfta okudu, bu yıl İÇ KAYIT ile üst sınıfa geçti
+          const prevGrade = String(gradeNum - 1);
+          const prevSection = assignSection(campus.id, YEAR_2025, deptId, prevGrade);
+          createEnrollment(sid, campus, YEAR_2025, prevGrade, deptId, prevSection,
+            dateStr(2025, rint(5, 8), rint(1, 28)), gradeNum - 1 === 9 ? 'DIS_KAYIT' : 'IC_KAYIT',
+            '2025-09-15', rint(8, 10), behavior, userIds, payerName, payerPhone);
+          createEnrollment(sid, campus, YEAR_2026, grade, deptId, studentSection,
+            dateStr(2026, rint(5, 7), rint(1, 14)), 'IC_KAYIT', dateStr(2026, 8, rint(1, 28)),
+            rint(9, 10), 0, userIds, payerName, payerPhone);
+        }
+      } else {
+        // Yenilemeyen (9-11) veya mezun (12): sadece geçen yıl kaydı var
+        createEnrollment(sid, campus, YEAR_2025, grade, deptId, studentSection,
+          dateStr(2025, rint(5, 8), rint(1, 28)), gradeNum === 9 ? 'DIS_KAYIT' : 'IC_KAYIT',
+          '2025-09-15', rint(8, 10), category === 'nonrenew' ? pick([1, 2]) : behavior,
+          userIds, payerName, payerPhone);
       }
     }
   }

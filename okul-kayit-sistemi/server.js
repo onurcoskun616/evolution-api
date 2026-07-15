@@ -31,10 +31,10 @@ app.get('/api/meta', authenticate, (req, res) => {
     academic_years: db.prepare('SELECT * FROM academic_years ORDER BY start_date DESC').all(),
     payment_methods: Object.entries(METHOD_LABELS).map(([value, label]) => ({ value, label })),
     roles: Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label })),
-    grades: ['Anaokulu', 'İlkokul Hazırlık', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'],
+    grades: ['9', '10', '11', '12'],
     enrollment_types: [
-      { value: 'YENI_KAYIT', label: 'Yeni Kayıt' },
-      { value: 'KAYIT_YENILEME', label: 'Kayıt Yenileme' },
+      { value: 'DIS_KAYIT', label: 'Dış Kayıt (Yeni Öğrenci)' },
+      { value: 'IC_KAYIT', label: 'İç Kayıt (Kayıt Yenileme)' },
       { value: 'NAKIL', label: 'Nakil' },
     ],
     student_statuses: [

@@ -5,6 +5,55 @@ const { requirePermission, assertCampusAccess, campusScope } = require('../auth'
 const router = express.Router();
 
 const PAYMENT_METHODS = ['NAKIT', 'KREDI_KARTI', 'KMH', 'SENET', 'HAVALE_EFT', 'CEK', 'MAIL_ORDER'];
+const ENROLLMENT_TYPES = ['DIS_KAYIT', 'IC_KAYIT', 'NAKIL'];
+const { GRADES, MAX_CLASS_SIZE, SECTION_LETTERS } = require('./parameters');
+
+/**
+ * Bölüm + sınıf + şube doğrulaması:
+ * - bölüm kampüse ait ve aktif olmalı
+ * - sınıf 9-12 olmalı
+ * - şube, o yıl için tanımlı şube planında olmalı
+ * - şubede 30 öğrenci sınırı aşılmamalı (excludeEnrollmentId: güncellemede kendisini sayma)
+ */
+function validatePlacement(campusId, yearId, b, excludeEnrollmentId) {
+  const grade = String(b.grade || '');
+  if (!GRADES.includes(grade)) throw new Error('Sınıf kademesi 9, 10, 11 veya 12 olmalıdır.');
+  const dept = db.prepare('SELECT * FROM departments WHERE id = ? AND campus_id = ?')
+    .get(Number(b.department_id), campusId);
+  if (!dept) throw new Error('Bu kampüse ait geçerli bir bölüm seçmelisiniz.');
+  if (!dept.active) throw new Error(`"${dept.name}" bölümü pasif durumda.`);
+  const section = String(b.section || '').trim().toUpperCase();
+  if (!section) throw new Error('Şube seçimi zorunludur.');
+  const plan = db.prepare(`
+    SELECT section_count FROM section_plans
+    WHERE campus_id = ? AND academic_year_id = ? AND department_id = ? AND grade = ?`)
+    .get(campusId, yearId, dept.id, grade);
+  if (!plan) {
+    throw new Error(`"${dept.name}" bölümü ${grade}. sınıf için şube planı tanımlanmamış. Önce Parametreler sayfasından şube sayısını belirleyin.`);
+  }
+  const idx = SECTION_LETTERS.indexOf(section);
+  if (section.length !== 1 || idx < 0 || idx >= plan.section_count) {
+    throw new Error(`Geçersiz şube. Bu bölüm/sınıf için tanımlı şubeler: ${SECTION_LETTERS.slice(0, plan.section_count).split('').join(', ')}`);
+  }
+  const occupied = db.prepare(`
+    SELECT COUNT(*) AS c FROM enrollments
+    WHERE campus_id = ? AND academic_year_id = ? AND department_id = ? AND grade = ?
+      AND section = ? AND status != 'IPTAL' ${excludeEnrollmentId ? 'AND id != ?' : ''}`)
+    .get(...[campusId, yearId, dept.id, grade, section, ...(excludeEnrollmentId ? [excludeEnrollmentId] : [])]).c;
+  if (occupied >= MAX_CLASS_SIZE) {
+    throw new Error(`${dept.name} ${grade}-${section} şubesi dolu (${occupied}/${MAX_CLASS_SIZE}). Başka bir şube seçin.`);
+  }
+  return { dept, grade, section };
+}
+
+/** Aktif yıl kaydıysa öğrenci kartındaki bölüm/sınıf/şubeyi senkronlar. */
+function syncStudentPlacement(studentId, yearId, placement) {
+  const year = db.prepare('SELECT active FROM academic_years WHERE id = ?').get(yearId);
+  if (year && year.active) {
+    db.prepare(`UPDATE students SET department_id = ?, grade = ?, section = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(placement.dept.id, placement.grade, placement.section, studentId);
+  }
+}
 
 /**
  * Taksit planı üretir. Kuruş farkları son taksitte toplanır,
@@ -199,8 +248,9 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
   if (b.default_payment_method && !PAYMENT_METHODS.includes(b.default_payment_method)) {
     return res.status(400).json({ error: 'Geçersiz ödeme türü.' });
   }
-  let fees, plan, itemsInfo;
+  let fees, plan, itemsInfo, placement;
   try {
+    placement = validatePlacement(student.campus_id, year.id, b);
     itemsInfo = resolveItems(student.campus_id, year.id, b.items);
     fees = feesFromItems(itemsInfo);
     assertDiscountWithinLimits(student.campus_id, year.id, fees);
@@ -216,13 +266,13 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
   const result = db.transaction(() => {
     const info = db.prepare(`
       INSERT INTO enrollments (student_id, academic_year_id, campus_id, enrollment_date, enrollment_type,
-        grade, list_fee, discount_rate, discount_amount, discount_reason, net_fee, down_payment,
+        grade, department_id, section, list_fee, discount_rate, discount_amount, discount_reason, net_fee, down_payment,
         installment_count, default_payment_method, payer_name, payer_tc, payer_phone, notes, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(student.id, year.id, student.campus_id,
         b.enrollment_date || today(),
-        ['YENI_KAYIT', 'KAYIT_YENILEME', 'NAKIL'].includes(b.enrollment_type) ? b.enrollment_type : 'YENI_KAYIT',
-        b.grade || student.grade,
+        ENROLLMENT_TYPES.includes(b.enrollment_type) ? b.enrollment_type : 'DIS_KAYIT',
+        placement.grade, placement.dept.id, placement.section,
         fees.list, fees.discountRate, fees.discountAmount, b.discount_reason || '',
         fees.net, money(b.down_payment),
         plan.filter(p => p.seq_no > 0).length,
@@ -230,6 +280,7 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
         b.payer_name || '', b.payer_tc || '', b.payer_phone || '',
         b.notes || '', req.user.id);
     const enrollmentId = info.lastInsertRowid;
+    syncStudentPlacement(student.id, year.id, placement);
     const ins = db.prepare(`
       INSERT INTO installments (enrollment_id, seq_no, label, due_date, amount)
       VALUES (?, ?, ?, ?, ?)`);
@@ -308,9 +359,25 @@ router.put('/:id', requirePermission('enrollment.edit'), (req, res) => {
       }
     })();
   }
+  // Bölüm / sınıf / şube değişikliği (öğrenci bölüm ve şube değiştirebilir)
+  if (b.department_id !== undefined || b.section !== undefined || b.grade !== undefined) {
+    let placement;
+    try {
+      placement = validatePlacement(e.campus_id, e.academic_year_id, {
+        department_id: b.department_id !== undefined ? b.department_id : e.department_id,
+        grade: b.grade !== undefined ? b.grade : e.grade,
+        section: b.section !== undefined ? b.section : e.section,
+      }, e.id);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+    db.prepare('UPDATE enrollments SET department_id = ?, grade = ?, section = ? WHERE id = ?')
+      .run(placement.dept.id, placement.grade, placement.section, e.id);
+    syncStudentPlacement(e.student_id, e.academic_year_id, placement);
+  }
   db.prepare(`
     UPDATE enrollments SET discount_reason = ?, payer_name = ?, payer_tc = ?, payer_phone = ?,
-      default_payment_method = ?, notes = ?, grade = ? WHERE id = ?`)
+      default_payment_method = ?, notes = ? WHERE id = ?`)
     .run(
       b.discount_reason !== undefined ? b.discount_reason : e.discount_reason,
       b.payer_name !== undefined ? b.payer_name : e.payer_name,
@@ -318,7 +385,6 @@ router.put('/:id', requirePermission('enrollment.edit'), (req, res) => {
       b.payer_phone !== undefined ? b.payer_phone : e.payer_phone,
       PAYMENT_METHODS.includes(b.default_payment_method) ? b.default_payment_method : e.default_payment_method,
       b.notes !== undefined ? b.notes : e.notes,
-      b.grade !== undefined ? b.grade : e.grade,
       e.id);
   audit(req.user.id, 'UPDATE', 'enrollment', e.id, planChange ? 'plan yeniden oluşturuldu' : '');
   res.json({ ok: true });

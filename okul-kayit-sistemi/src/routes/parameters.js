@@ -9,6 +9,10 @@ const { requirePermission, assertCampusAccess } = require('../auth');
 
 const router = express.Router();
 
+const GRADES = ['9', '10', '11', '12'];
+const MAX_CLASS_SIZE = 30;
+const SECTION_LETTERS = 'ABCDEFGHIJ';
+
 function getParams(campusId, yearId) {
   const items = db.prepare('SELECT * FROM fee_items ORDER BY sort_order, id').all();
   const prices = db.prepare(
@@ -18,9 +22,20 @@ function getParams(campusId, yearId) {
   const limits = db.prepare(
     'SELECT max_discount_rate, max_discount_amount FROM campus_discount_limits WHERE campus_id = ? AND academic_year_id = ?'
   ).get(campusId, yearId) || { max_discount_rate: null, max_discount_amount: null };
+  const departments = db.prepare(
+    'SELECT * FROM departments WHERE campus_id = ? ORDER BY name').all(campusId);
+  const planRows = db.prepare(
+    'SELECT department_id, grade, section_count FROM section_plans WHERE campus_id = ? AND academic_year_id = ?'
+  ).all(campusId, yearId);
+  const section_plans = {};
+  for (const p of planRows) section_plans[`${p.department_id}|${p.grade}`] = p.section_count;
   return {
     fee_items: items.map(i => ({ ...i, price: priceMap[i.id] ?? null })),
     limits,
+    departments,
+    section_plans,
+    grades: GRADES,
+    max_class_size: MAX_CLASS_SIZE,
   };
 }
 
@@ -66,6 +81,18 @@ router.put('/', requirePermission('settings.manage'), (req, res) => {
     return res.status(400).json({ error: 'Azami indirim tutarı geçersiz.' });
   }
 
+  // Şube planı doğrulama
+  const plans = Array.isArray(b.section_plans) ? b.section_plans : [];
+  for (const p of plans) {
+    if (!GRADES.includes(String(p.grade))) {
+      return res.status(400).json({ error: 'Şube planında sınıf kademesi 9-12 arasında olmalıdır.' });
+    }
+    const cnt = Number(p.section_count);
+    if (p.section_count !== null && p.section_count !== '' && (isNaN(cnt) || cnt < 0 || cnt > 10)) {
+      return res.status(400).json({ error: 'Şube sayısı 0-10 arasında olmalıdır.' });
+    }
+  }
+
   db.transaction(() => {
     const up = db.prepare(`
       INSERT INTO campus_prices (campus_id, academic_year_id, fee_item_id, price)
@@ -86,6 +113,22 @@ router.put('/', requirePermission('settings.manage'), (req, res) => {
         SET max_discount_rate = excluded.max_discount_rate,
             max_discount_amount = excluded.max_discount_amount`)
       .run(campusId, yearId, maxRate, maxAmount);
+    const upPlan = db.prepare(`
+      INSERT INTO section_plans (campus_id, academic_year_id, department_id, grade, section_count)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(campus_id, academic_year_id, department_id, grade) DO UPDATE
+        SET section_count = excluded.section_count`);
+    const delPlan = db.prepare(
+      'DELETE FROM section_plans WHERE campus_id = ? AND academic_year_id = ? AND department_id = ? AND grade = ?');
+    for (const p of plans) {
+      const deptId = Number(p.department_id);
+      if (!deptId) continue;
+      const dept = db.prepare('SELECT id FROM departments WHERE id = ? AND campus_id = ?').get(deptId, campusId);
+      if (!dept) continue;
+      const cnt = Number(p.section_count);
+      if (!cnt) delPlan.run(campusId, yearId, deptId, String(p.grade));
+      else upPlan.run(campusId, yearId, deptId, String(p.grade), cnt);
+    }
   })();
   audit(req.user.id, 'UPDATE', 'parameters', campusId, `yıl=${yearId}`);
   res.json({ ok: true, ...getParams(campusId, yearId) });
@@ -119,5 +162,81 @@ router.put('/items/:id', requirePermission('settings.manage'), (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Bölümler ----
+router.get('/departments', (req, res) => {
+  let campusId = Number(req.query.campus_id);
+  if (req.user.role !== 'GENEL_MERKEZ') campusId = req.user.campus_id;
+  if (!campusId) return res.status(400).json({ error: 'Kampüs seçimi zorunludur.' });
+  const rows = db.prepare('SELECT * FROM departments WHERE campus_id = ? ORDER BY name').all(campusId);
+  res.json({ departments: rows });
+});
+
+router.post('/departments', requirePermission('settings.manage'), (req, res) => {
+  const b = req.body || {};
+  const campusId = Number(b.campus_id);
+  const name = String(b.name || '').trim();
+  if (!campusId || !name) return res.status(400).json({ error: 'Kampüs ve bölüm adı zorunludur.' });
+  if (!assertCampusAccess(req, campusId)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
+  if (!db.prepare('SELECT id FROM campuses WHERE id = ?').get(campusId)) {
+    return res.status(404).json({ error: 'Kampüs bulunamadı.' });
+  }
+  if (db.prepare('SELECT id FROM departments WHERE campus_id = ? AND name = ?').get(campusId, name)) {
+    return res.status(400).json({ error: 'Bu kampüste aynı isimde bölüm zaten var.' });
+  }
+  const info = db.prepare('INSERT INTO departments (campus_id, name) VALUES (?, ?)').run(campusId, name);
+  audit(req.user.id, 'CREATE', 'department', info.lastInsertRowid, name);
+  res.json({ id: info.lastInsertRowid });
+});
+
+router.put('/departments/:id', requirePermission('settings.manage'), (req, res) => {
+  const dept = db.prepare('SELECT * FROM departments WHERE id = ?').get(req.params.id);
+  if (!dept) return res.status(404).json({ error: 'Bölüm bulunamadı.' });
+  if (!assertCampusAccess(req, dept.campus_id)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
+  const b = req.body || {};
+  const name = b.name !== undefined ? String(b.name).trim() : dept.name;
+  if (!name) return res.status(400).json({ error: 'Bölüm adı boş olamaz.' });
+  const dup = db.prepare('SELECT id FROM departments WHERE campus_id = ? AND name = ? AND id != ?')
+    .get(dept.campus_id, name, dept.id);
+  if (dup) return res.status(400).json({ error: 'Bu isimde başka bir bölüm var.' });
+  db.prepare('UPDATE departments SET name = ?, active = ? WHERE id = ?')
+    .run(name, b.active !== undefined ? (b.active ? 1 : 0) : dept.active, dept.id);
+  audit(req.user.id, 'UPDATE', 'department', dept.id, name);
+  res.json({ ok: true });
+});
+
+// ---- Şube doluluk durumu (kayıt formu için) ----
+router.get('/sections', (req, res) => {
+  const yearId = Number(req.query.academic_year_id);
+  const deptId = Number(req.query.department_id);
+  const grade = String(req.query.grade || '');
+  let campusId = Number(req.query.campus_id);
+  if (req.user.role !== 'GENEL_MERKEZ') campusId = req.user.campus_id;
+  if (!campusId || !yearId || !deptId || !GRADES.includes(grade)) {
+    return res.status(400).json({ error: 'Kampüs, yıl, bölüm ve sınıf (9-12) zorunludur.' });
+  }
+  const plan = db.prepare(`
+    SELECT section_count FROM section_plans
+    WHERE campus_id = ? AND academic_year_id = ? AND department_id = ? AND grade = ?`)
+    .get(campusId, yearId, deptId, grade);
+  if (!plan) {
+    return res.json({ sections: [], plan_missing: true, max_class_size: MAX_CLASS_SIZE });
+  }
+  const counts = db.prepare(`
+    SELECT section, COUNT(*) AS c FROM enrollments
+    WHERE campus_id = ? AND academic_year_id = ? AND department_id = ? AND grade = ? AND status != 'IPTAL'
+    GROUP BY section`).all(campusId, yearId, deptId, grade);
+  const countMap = Object.fromEntries(counts.map(r => [r.section, r.c]));
+  const sections = [];
+  for (let i = 0; i < Math.min(plan.section_count, SECTION_LETTERS.length); i++) {
+    const letter = SECTION_LETTERS[i];
+    const current = countMap[letter] || 0;
+    sections.push({ section: letter, current, capacity: MAX_CLASS_SIZE, full: current >= MAX_CLASS_SIZE });
+  }
+  res.json({ sections, plan_missing: false, max_class_size: MAX_CLASS_SIZE });
+});
+
 module.exports = router;
 module.exports.getParams = getParams;
+module.exports.GRADES = GRADES;
+module.exports.MAX_CLASS_SIZE = MAX_CLASS_SIZE;
+module.exports.SECTION_LETTERS = SECTION_LETTERS;

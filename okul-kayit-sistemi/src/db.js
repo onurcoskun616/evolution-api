@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS enrollments (
   academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
   campus_id INTEGER NOT NULL REFERENCES campuses(id),
   enrollment_date TEXT NOT NULL,
-  enrollment_type TEXT NOT NULL DEFAULT 'YENI_KAYIT' CHECK (enrollment_type IN ('YENI_KAYIT','KAYIT_YENILEME','NAKIL')),
+  enrollment_type TEXT NOT NULL DEFAULT 'DIS_KAYIT' CHECK (enrollment_type IN ('DIS_KAYIT','IC_KAYIT','NAKIL')),
   grade TEXT NOT NULL DEFAULT '',
   list_fee REAL NOT NULL DEFAULT 0,
   discount_rate REAL NOT NULL DEFAULT 0,
@@ -191,6 +191,26 @@ CREATE TABLE IF NOT EXISTS campus_prices (
   UNIQUE(campus_id, academic_year_id, fee_item_id)
 );
 
+-- Bölümler (meslek alanları) - kampüs bazında tanımlanır
+CREATE TABLE IF NOT EXISTS departments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campus_id INTEGER NOT NULL REFERENCES campuses(id),
+  name TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(campus_id, name)
+);
+
+-- Şube planı: kampüs + yıl + bölüm + sınıf kademesi için kaç şube açılacağı
+CREATE TABLE IF NOT EXISTS section_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campus_id INTEGER NOT NULL REFERENCES campuses(id),
+  academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
+  department_id INTEGER NOT NULL REFERENCES departments(id),
+  grade TEXT NOT NULL,
+  section_count INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(campus_id, academic_year_id, department_id, grade)
+);
+
 -- Kampüs bazında izin verilen azami indirim (NULL = sınırsız)
 CREATE TABLE IF NOT EXISTS campus_discount_limits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -225,6 +245,19 @@ if (!eiCols.includes('discount_rate')) {
     ALTER TABLE enrollment_items ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0;
     ALTER TABLE enrollment_items ADD COLUMN net_total REAL NOT NULL DEFAULT 0;
     UPDATE enrollment_items SET net_total = total;
+  `);
+}
+
+// Bölüm/şube geçişi: öğrenci ve kayıtlara bölüm + şube alanları
+const stCols = db.prepare('PRAGMA table_info(students)').all().map(c => c.name);
+if (!stCols.includes('department_id')) {
+  db.exec('ALTER TABLE students ADD COLUMN department_id INTEGER REFERENCES departments(id)');
+}
+const enCols = db.prepare('PRAGMA table_info(enrollments)').all().map(c => c.name);
+if (!enCols.includes('department_id')) {
+  db.exec(`
+    ALTER TABLE enrollments ADD COLUMN department_id INTEGER REFERENCES departments(id);
+    ALTER TABLE enrollments ADD COLUMN section TEXT NOT NULL DEFAULT '';
   `);
 }
 

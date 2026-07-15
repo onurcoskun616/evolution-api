@@ -4,7 +4,7 @@ const { requirePermission, campusScope, assertCampusAccess } = require('../auth'
 
 const router = express.Router();
 
-const GRADES = ['Anaokulu', 'İlkokul Hazırlık', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
+const GRADES = ['9', '10', '11', '12'];
 
 /** Yeni öğrenci numarası üretir: <KAMPUS_KODU>-<YIL>-<SIRA> */
 function nextStudentNo(campusId) {
@@ -28,6 +28,7 @@ router.get('/', requirePermission('student.view'), (req, res) => {
   if (scope !== null) { where.push('s.campus_id = @campus'); params.campus = scope; }
   if (q.status) { where.push('s.status = @status'); params.status = q.status; }
   if (q.grade) { where.push('s.grade = @grade'); params.grade = q.grade; }
+  if (q.department_id) { where.push('s.department_id = @dept'); params.dept = Number(q.department_id); }
   if (q.search) {
     where.push(`(s.first_name || ' ' || s.last_name LIKE @search
       OR s.student_no LIKE @search OR s.tc_no LIKE @search
@@ -43,10 +44,11 @@ router.get('/', requirePermission('student.view'), (req, res) => {
   params.offset = (page - 1) * pageSize;
   const rows = db.prepare(`
     SELECT s.id, s.student_no, s.tc_no, s.first_name, s.last_name, s.gender, s.grade, s.section,
-           s.status, s.campus_id, c.name AS campus_name,
+           s.status, s.campus_id, s.department_id, c.name AS campus_name, d.name AS department_name,
            (SELECT p.full_name FROM parents p WHERE p.student_id = s.id ORDER BY p.is_primary DESC, p.id LIMIT 1) AS parent_name,
            (SELECT p.phone FROM parents p WHERE p.student_id = s.id ORDER BY p.is_primary DESC, p.id LIMIT 1) AS parent_phone
     FROM students s JOIN campuses c ON c.id = s.campus_id
+    LEFT JOIN departments d ON d.id = s.department_id
     ${whereSql}
     ORDER BY s.last_name, s.first_name
     LIMIT @limit OFFSET @offset`).all(params);
@@ -56,17 +58,20 @@ router.get('/', requirePermission('student.view'), (req, res) => {
 // ---- Detay ----
 router.get('/:id', requirePermission('student.view'), (req, res) => {
   const s = db.prepare(`
-    SELECT s.*, c.name AS campus_name FROM students s
-    JOIN campuses c ON c.id = s.campus_id WHERE s.id = ?`).get(req.params.id);
+    SELECT s.*, c.name AS campus_name, d.name AS department_name FROM students s
+    JOIN campuses c ON c.id = s.campus_id
+    LEFT JOIN departments d ON d.id = s.department_id
+    WHERE s.id = ?`).get(req.params.id);
   if (!s) return res.status(404).json({ error: 'Öğrenci bulunamadı.' });
   if (!assertCampusAccess(req, s.campus_id)) {
     return res.status(403).json({ error: 'Bu öğrenci başka bir kampüse kayıtlı.' });
   }
   const parents = db.prepare('SELECT * FROM parents WHERE student_id = ? ORDER BY is_primary DESC, id').all(s.id);
   const enrollments = db.prepare(`
-    SELECT e.*, ay.name AS academic_year_name,
+    SELECT e.*, ay.name AS academic_year_name, dn.name AS department_name,
       (SELECT COALESCE(SUM(p.amount), 0) FROM payments p WHERE p.enrollment_id = e.id AND p.cancelled = 0) AS total_paid
     FROM enrollments e JOIN academic_years ay ON ay.id = e.academic_year_id
+    LEFT JOIN departments dn ON dn.id = e.department_id
     WHERE e.student_id = ? ORDER BY ay.start_date DESC`).all(s.id);
   const t = today();
   for (const e of enrollments) {
@@ -111,16 +116,24 @@ router.post('/', requirePermission('student.create'), (req, res) => {
     const dup = db.prepare('SELECT id, student_no FROM students WHERE tc_no = ?').get(tc);
     if (dup) return res.status(400).json({ error: `Bu TC Kimlik No ${dup.student_no} numaralı öğrenciye kayıtlı.` });
   }
+  let departmentId = null;
+  if (b.department_id) {
+    const dept = db.prepare('SELECT id FROM departments WHERE id = ? AND campus_id = ?')
+      .get(Number(b.department_id), Number(b.campus_id));
+    if (!dept) return res.status(400).json({ error: 'Seçilen bölüm bu kampüse ait değil.' });
+    departmentId = dept.id;
+  }
   const result = db.transaction(() => {
     const studentNo = nextStudentNo(Number(b.campus_id));
     const info = db.prepare(`
       INSERT INTO students (student_no, tc_no, first_name, last_name, birth_date, birth_place, gender,
-        blood_type, nationality, campus_id, grade, section, previous_school, health_notes,
+        blood_type, nationality, campus_id, department_id, grade, section, previous_school, health_notes,
         address, city, district, status, notes, created_by)
       VALUES (@student_no, @tc_no, @first_name, @last_name, @birth_date, @birth_place, @gender,
-        @blood_type, @nationality, @campus_id, @grade, @section, @previous_school, @health_notes,
+        @blood_type, @nationality, @campus_id, @department_id, @grade, @section, @previous_school, @health_notes,
         @address, @city, @district, @status, @notes, @created_by)`)
       .run({
+        department_id: departmentId,
         student_no: studentNo,
         tc_no: tc,
         first_name: String(b.first_name).trim(),
@@ -186,6 +199,17 @@ router.put('/:id', requirePermission('student.edit'), (req, res) => {
   const params = { id: s.id, campus_id: campusId };
   for (const f of STUDENT_FIELDS) {
     if (b[f] !== undefined) { sets.push(`${f} = @${f}`); params[f] = b[f] === null ? '' : String(b[f]).trim(); }
+  }
+  if (b.department_id !== undefined) {
+    let deptId = null;
+    if (b.department_id) {
+      const dept = db.prepare('SELECT id FROM departments WHERE id = ? AND campus_id = ?')
+        .get(Number(b.department_id), campusId);
+      if (!dept) return res.status(400).json({ error: 'Seçilen bölüm bu kampüse ait değil.' });
+      deptId = dept.id;
+    }
+    sets.push('department_id = @department_id');
+    params.department_id = deptId;
   }
   db.prepare(`UPDATE students SET ${sets.join(', ')} WHERE id = @id`).run(params);
   audit(req.user.id, 'UPDATE', 'student', s.id, s.student_no);
