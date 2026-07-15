@@ -18,8 +18,9 @@ ENV OKUL_DATA_DIR=/data
 VOLUME /data
 
 EXPOSE 3000
+# PORT ortam değişkenine saygı duyar (Render gibi PaaS'lar kendi portunu atar)
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget -qO- http://localhost:3000/api/health || exit 1
+  CMD sh -c 'wget -qO- "http://localhost:${PORT:-3000}/api/health"' || exit 1
 
 # İlk açılışta (boş veritabanında) üretim kurulumunu çalıştırır, sonra sunucuyu başlatır
 CMD ["sh", "-c", "node setup.js && node server.js"]
