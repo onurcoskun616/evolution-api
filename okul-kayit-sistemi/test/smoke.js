@@ -163,16 +163,31 @@ async function main() {
     assert.equal(r.data.plan.length, 8); // peşinat + 7 taksit
   });
 
-  await test('Kayıt oluşturma (KMH, 9 taksit)', async () => {
+  let activeYearId, pricedItems, expectedNet;
+
+  await test('Parametreler: ilan listesi seed ile hazır', async () => {
     const meta = await req('GET', '/meta', { token: campusToken });
-    const activeYear = meta.data.academic_years.find(y => y.active);
+    activeYearId = meta.data.academic_years.find(y => y.active).id;
+    const r = await req('GET', `/parameters?academic_year_id=${activeYearId}`, { token: campusToken });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    pricedItems = r.data.fee_items.filter(i => i.price !== null);
+    assert.ok(pricedItems.length >= 6, 'tüm kalemlerin ilan fiyatı olmalı');
+    assert.equal(r.data.limits.max_discount_rate, 25);
+    assert.equal(r.data.limits.max_discount_amount, 100000);
+  });
+
+  await test('Kayıt oluşturma (ilan kalemleriyle: eğitim+yemek, KMH, 9 taksit)', async () => {
+    const chosen = [pricedItems[0], pricedItems[2]];
+    const listFee = Math.round((chosen[0].price + chosen[1].price) * 100) / 100;
+    expectedNet = Math.round(listFee * 0.85 * 100) / 100;
     const r = await req('POST', '/enrollments', {
       token: campusToken,
       body: {
-        student_id: studentId, academic_year_id: activeYear.id,
+        student_id: studentId, academic_year_id: activeYearId,
         enrollment_type: 'YENI_KAYIT', grade: '5',
-        list_fee: 180000, discount_rate: 15, discount_reason: 'Erken kayıt indirimi',
-        down_payment: 18000, installment_count: 9, first_due_date: '2026-09-15',
+        items: chosen.map(c => ({ fee_item_id: c.id, quantity: 1 })),
+        discount_rate: 15, discount_reason: 'Erken kayıt indirimi',
+        down_payment: 10000, installment_count: 9, first_due_date: '2026-09-15',
         default_payment_method: 'KMH', payer_name: 'Test Anne', payer_phone: '0532 111 22 33',
       },
     });
@@ -180,21 +195,86 @@ async function main() {
     enrollmentId = r.data.id;
     const d = await req('GET', '/students/' + studentId, { token: campusToken });
     const e = d.data.enrollments.find(x => x.id === enrollmentId);
-    assert.equal(e.net_fee, 153000);
+    assert.equal(e.list_fee, listFee, `liste ücreti kalemlerden hesaplanmalı: ${e.list_fee} != ${listFee}`);
+    assert.equal(e.net_fee, expectedNet);
+    assert.equal(e.items.length, 2);
     assert.equal(e.installments.length, 10);
     installments = e.installments;
     const total = e.installments.reduce((a, i) => a + i.amount, 0);
-    assert.equal(Math.round(total * 100) / 100, 153000);
+    assert.equal(Math.round(total * 100) / 100, expectedNet);
   });
 
   await test('Aynı yıl için ikinci kayıt reddedilir', async () => {
-    const meta = await req('GET', '/meta', { token: campusToken });
-    const activeYear = meta.data.academic_years.find(y => y.active);
     const r = await req('POST', '/enrollments', {
       token: campusToken,
-      body: { student_id: studentId, academic_year_id: activeYear.id, list_fee: 1000, installment_count: 1, first_due_date: '2026-09-15' },
+      body: { student_id: studentId, academic_year_id: activeYearId, items: [{ fee_item_id: pricedItems[0].id }], installment_count: 1, first_due_date: '2026-09-15' },
     });
     assert.equal(r.status, 400);
+  });
+
+  await test('Kayıt: ücret kalemi seçilmeden reddedilir', async () => {
+    const s = await req('POST', '/students', {
+      token: campusToken, body: { first_name: 'Kalemsiz', last_name: 'Test', campus_id: campusId },
+    });
+    const r = await req('POST', '/enrollments', {
+      token: campusToken,
+      body: { student_id: s.data.id, academic_year_id: activeYearId, installment_count: 5, first_due_date: '2026-09-15' },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(/kalem/i.test(r.data.error), r.data.error);
+  });
+
+  await test('İndirim sınırı: azami oran (%25) aşılırsa kayıt reddedilir', async () => {
+    const s = await req('POST', '/students', {
+      token: campusToken, body: { first_name: 'İndirim', last_name: 'Sınırı', campus_id: campusId },
+    });
+    const body = {
+      student_id: s.data.id, academic_year_id: activeYearId,
+      items: [{ fee_item_id: pricedItems[0].id, quantity: 1 }],
+      installment_count: 5, first_due_date: '2026-09-15',
+    };
+    const rejected = await req('POST', '/enrollments', {
+      token: campusToken, body: { ...body, discount_rate: 40 },
+    });
+    assert.equal(rejected.status, 400);
+    assert.ok(/azami/i.test(rejected.data.error), rejected.data.error);
+    const ok = await req('POST', '/enrollments', {
+      token: campusToken, body: { ...body, discount_rate: 20 },
+    });
+    assert.equal(ok.status, 200, JSON.stringify(ok.data));
+  });
+
+  await test('Parametreler: kampüs müdürü düzenleyemez, genel merkez düzenler', async () => {
+    const denied = await req('PUT', '/parameters', {
+      token: campusToken,
+      body: { campus_id: campusId, academic_year_id: activeYearId, prices: [] },
+    });
+    assert.equal(denied.status, 403);
+    const first = pricedItems[0];
+    const r = await req('PUT', '/parameters', {
+      token: hqToken,
+      body: {
+        campus_id: campusId, academic_year_id: activeYearId,
+        prices: [{ fee_item_id: first.id, price: 199000 }],
+        max_discount_rate: 30, max_discount_amount: 120000,
+      },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.fee_items.find(i => i.id === first.id).price, 199000);
+    assert.equal(r.data.limits.max_discount_rate, 30);
+  });
+
+  await test('Yeni ücret kalemi eklenip fiyatlandırılabilir', async () => {
+    const r = await req('POST', '/parameters/items', { token: hqToken, body: { name: 'Etüt Ücreti' } });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const upd = await req('PUT', '/parameters', {
+      token: hqToken,
+      body: { campus_id: campusId, academic_year_id: activeYearId, prices: [{ fee_item_id: r.data.id, price: 15000 }] },
+    });
+    assert.equal(upd.status, 200);
+    assert.equal(upd.data.fee_items.find(i => i.id === r.data.id).price, 15000);
+    const dup = await req('POST', '/parameters/items', { token: hqToken, body: { name: 'Etüt Ücreti' } });
+    assert.equal(dup.status, 400);
   });
 
   let paymentId;
@@ -203,15 +283,15 @@ async function main() {
     const pesinat = installments.find(i => i.seq_no === 0);
     const r = await req('POST', '/payments', {
       token: muhasebeToken,
-      body: { enrollment_id: enrollmentId, installment_id: pesinat.id, amount: 18000, method: 'NAKIT', receipt_no: 'TEST-001' },
+      body: { enrollment_id: enrollmentId, installment_id: pesinat.id, amount: pesinat.amount, method: 'NAKIT', receipt_no: 'TEST-001' },
     });
     assert.equal(r.status, 200, JSON.stringify(r.data));
     paymentId = r.data.id;
     const d = await req('GET', '/students/' + studentId, { token: campusToken });
     const e = d.data.enrollments.find(x => x.id === enrollmentId);
     assert.equal(e.installments.find(i => i.seq_no === 0).status, 'ODENDI');
-    assert.equal(e.total_paid, 18000);
-    assert.equal(e.balance, 135000);
+    assert.equal(e.total_paid, pesinat.amount);
+    assert.equal(e.balance, Math.round((expectedNet - pesinat.amount) * 100) / 100);
   });
 
   await test('Tahsilat: kısmi ödeme taksiti KISMI yapar', async () => {
@@ -353,11 +433,13 @@ async function main() {
       token: campusToken,
       body: { first_name: 'İptal', last_name: 'Testi', campus_id: campusId },
     });
-    const meta = await req('GET', '/meta', { token: campusToken });
-    const activeYear = meta.data.academic_years.find(y => y.active);
     const e = await req('POST', '/enrollments', {
       token: campusToken,
-      body: { student_id: s.data.id, academic_year_id: activeYear.id, list_fee: 50000, installment_count: 5, first_due_date: '2026-09-15' },
+      body: {
+        student_id: s.data.id, academic_year_id: activeYearId,
+        items: [{ fee_item_id: pricedItems[0].id, quantity: 1 }],
+        installment_count: 5, first_due_date: '2026-09-15',
+      },
     });
     const r = await req('POST', `/enrollments/${e.data.id}/cancel`, { token: campusToken, body: { reason: 'Vazgeçildi' } });
     assert.equal(r.status, 200);

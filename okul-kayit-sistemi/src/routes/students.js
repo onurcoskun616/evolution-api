@@ -70,6 +70,8 @@ router.get('/:id', requirePermission('student.view'), (req, res) => {
     WHERE e.student_id = ? ORDER BY ay.start_date DESC`).all(s.id);
   const t = today();
   for (const e of enrollments) {
+    e.items = db.prepare(
+      'SELECT * FROM enrollment_items WHERE enrollment_id = ? ORDER BY id').all(e.id);
     e.installments = db.prepare(
       'SELECT * FROM installments WHERE enrollment_id = ? ORDER BY seq_no').all(e.id)
       .map(i => ({ ...i, overdue: i.status !== 'ODENDI' && i.status !== 'IPTAL' && i.due_date < t }));

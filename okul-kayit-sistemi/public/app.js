@@ -172,6 +172,7 @@ const NAV = [
   { hash: '#/tahsilatlar', label: '💰 Tahsilatlar', perm: 'payment.view' },
   { hash: '#/taksitler', label: '📅 Taksit Takibi', perm: 'payment.view' },
   { hash: '#/raporlar', label: '📈 Raporlar', perm: 'report.view' },
+  { hash: '#/parametreler', label: '⚙️ Parametreler', perm: 'settings.manage' },
   { hash: '#/kullanicilar', label: '👥 Kullanıcılar', perm: 'user.manage' },
   { hash: '#/kampusler', label: '🏫 Kampüsler', perm: 'campus.manage' },
 ];
@@ -267,6 +268,7 @@ function route() {
     tahsilatlar: pagePayments,
     taksitler: pageInstallments,
     raporlar: pageReports,
+    parametreler: pageParameters,
     kullanicilar: pageUsers,
     kampusler: pageCampuses,
   };
@@ -291,6 +293,7 @@ async function pageDashboard() {
     if (year) qs.set('academic_year_id', year);
     let d;
     try { d = await api('/dashboard?' + qs); } catch (e) { toast(e.message, 'error'); return; }
+    if (!$('#dash-body')) return; // sayfa değişmiş
     const maxMonthly = Math.max(1, ...d.monthly_collections.map(m => m.total));
     const maxMethod = Math.max(1, ...d.by_method.map(m => m.total));
     $('#dash-body').innerHTML = `
@@ -370,6 +373,7 @@ async function pageStudents() {
     if (state.status) qs.set('status', state.status);
     let d;
     try { d = await api('/students?' + qs); } catch (e) { toast(e.message, 'error'); return; }
+    if (!$('#st-table')) return; // sayfa değişmiş
     $('#st-table').innerHTML = `
       <div class="table-wrap"><table>
         <thead><tr><th>Öğrenci No</th><th>Ad Soyad</th><th>Sınıf</th><th>Kampüs</th>
@@ -482,6 +486,18 @@ async function pageStudentDetail(id) {
         Ödeme türü: <b>${METHOD_LABELS[e.default_payment_method] || e.default_payment_method}</b>
         ${e.payer_name ? ` · Ödeme sorumlusu: <b>${esc(e.payer_name)}</b> ${e.payer_phone ? '(' + esc(e.payer_phone) + ')' : ''}` : ''}
       </div>
+      ${e.items && e.items.length ? `
+      <div class="section-title">Ücret Kalemleri (İlan Listesinden)</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Kalem</th><th class="num">İlan Fiyatı</th><th class="num">Adet</th><th class="num">Tutar</th></tr></thead>
+        <tbody>${e.items.map(it => `<tr>
+          <td>${esc(it.name)}</td>
+          <td class="num">${fmtTL(it.unit_price)}</td>
+          <td class="num">${it.quantity}</td>
+          <td class="num"><b>${fmtTL(it.total)}</b></td></tr>`).join('')}
+        <tr><td colspan="3"><b>Liste Ücreti Toplamı</b></td>
+          <td class="num"><b>${fmtTL(e.items.reduce((a, x) => a + x.total, 0))}</b></td></tr>
+        </tbody></table></div>` : ''}
       <div class="section-title">Taksit Planı</div>
       <div class="table-wrap"><table>
         <thead><tr><th>Taksit</th><th>Vade</th><th class="num">Tutar</th><th class="num">Ödenen</th>
@@ -784,7 +800,16 @@ async function pageNewEnrollment() {
     </div>
 
     <div class="card">
-      <h3>2. Kayıt ve Ücret Bilgileri</h3>
+      <h3>2. Ücret Kalemleri <span class="muted" style="font-weight:400; font-size:12.5px">· MEB'e ilan edilen liste fiyatlarından</span></h3>
+      <div id="ne-items"><div class="empty">Kalemleri görmek için öğrenci (veya yeni öğrenci sekmesinde kampüs) ve öğretim yılı seçin.</div></div>
+      <div class="flex mt" style="justify-content:flex-end; font-size:15px">
+        Liste Ücreti Toplamı:&nbsp;<b id="ne-total">₺0,00</b>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>3. Kayıt, İndirim ve Taksit Bilgileri</h3>
+      <p class="muted" id="ne-limit-hint" style="font-size:12.5px; margin-bottom:10px"></p>
       <div class="form-grid">
         ${yearSelect('ne-year', { allowAll: false })}
         <div class="field"><label>Kayıt Türü</label><select id="ne-type">
@@ -792,7 +817,6 @@ async function pageNewEnrollment() {
         <div class="field"><label>Kayıt Sınıfı</label><select id="ne-grade">
           ${META.grades.map(g => `<option>${g}</option>`).join('')}</select></div>
         <div class="field"><label>Kayıt Tarihi</label><input type="date" id="ne-date" value="${todayStr()}"></div>
-        <div class="field"><label>Liste Ücreti (TL) *</label><input type="number" step="0.01" id="ne-fee" placeholder="Örn: 200000"></div>
         <div class="field"><label>İndirim Oranı (%)</label><input type="number" step="0.01" min="0" max="100" id="ne-discount" value="0"></div>
         <div class="field"><label>İndirim Gerekçesi</label><input id="ne-discount-reason" placeholder="Kardeş, erken kayıt, burs…"></div>
         <div class="field"><label>Peşinat (TL)</label><input type="number" step="0.01" min="0" id="ne-down" value="0"></div>
@@ -826,9 +850,81 @@ async function pageNewEnrollment() {
     $('#tab-new').classList.toggle('active', m === 'new');
     $('#student-existing').style.display = m === 'existing' ? '' : 'none';
     $('#student-new').style.display = m === 'new' ? '' : 'none';
+    loadItems();
   };
   $('#tab-existing').onclick = () => setMode('existing');
   $('#tab-new').onclick = () => setMode('new');
+
+  // ---- Ücret kalemleri (MEB ilan listesi) ----
+  let itemsState = [];
+  let limitsState = null;
+
+  const currentCampusId = () => {
+    if (mode === 'existing') return selectedStudent ? selectedStudent.campus_id : null;
+    return isHQ() ? Number($('#sf-campus')?.value) : USER.campus.id;
+  };
+
+  const computeTotal = () => itemsState.reduce((a, i) =>
+    i.checked && i.price ? a + i.price * i.qty : a, 0);
+
+  function renderItemsTable() {
+    const priced = itemsState.filter(i => i.active);
+    $('#ne-items').innerHTML = priced.length ? `
+      <div class="table-wrap"><table>
+        <thead><tr><th style="width:40px"></th><th>Kalem</th><th class="num">İlan Fiyatı</th>
+        <th class="num" style="width:90px">Adet</th><th class="num">Tutar</th></tr></thead>
+        <tbody>${priced.map((i, idx) => `
+          <tr style="${i.price === null ? 'opacity:.5' : ''}">
+            <td><input type="checkbox" style="width:auto" data-item-check="${idx}"
+              ${i.checked ? 'checked' : ''} ${i.price === null ? 'disabled' : ''}></td>
+            <td><b>${esc(i.name)}</b>${i.price === null ? ' <span class="muted" style="font-size:11.5px">(ilan edilmemiş)</span>' : ''}</td>
+            <td class="num">${i.price === null ? '-' : fmtTL(i.price)}</td>
+            <td class="num"><input type="number" min="1" max="20" value="${i.qty}" data-item-qty="${idx}"
+              style="width:70px; text-align:right" ${i.price === null || !i.checked ? 'disabled' : ''}></td>
+            <td class="num"><b>${i.checked && i.price ? fmtTL(i.price * i.qty) : '-'}</b></td>
+          </tr>`).join('')}
+        </tbody></table></div>` :
+      '<div class="empty">Bu kampüs ve öğretim yılı için ilan edilmiş ücret listesi yok.<br>Önce <b>Parametreler</b> sayfasından liste fiyatlarını girin.</div>';
+    $('#ne-total').textContent = fmtTL(computeTotal());
+    $('#ne-limit-hint').textContent = limitsState &&
+      (limitsState.max_discount_rate !== null || limitsState.max_discount_amount !== null)
+      ? 'Bu kampüste izin verilen azami indirim: ' +
+        [limitsState.max_discount_rate !== null ? `%${limitsState.max_discount_rate}` : null,
+         limitsState.max_discount_amount !== null ? fmtTL(limitsState.max_discount_amount) : null]
+          .filter(Boolean).join(' ve ')
+      : '';
+    $('#ne-items').querySelectorAll('[data-item-check]').forEach(cb => cb.onchange = () => {
+      itemsState.filter(i => i.active)[Number(cb.dataset.itemCheck)].checked = cb.checked;
+      renderItemsTable();
+    });
+    $('#ne-items').querySelectorAll('[data-item-qty]').forEach(inp => inp.onchange = () => {
+      const it = itemsState.filter(i => i.active)[Number(inp.dataset.itemQty)];
+      it.qty = Math.max(1, Math.min(20, parseInt(inp.value, 10) || 1));
+      renderItemsTable();
+    });
+  }
+
+  async function loadItems() {
+    const campus = currentCampusId();
+    const year = $('#ne-year').value;
+    if (!campus || !year) {
+      itemsState = []; limitsState = null;
+      $('#ne-items').innerHTML = '<div class="empty">Kalemleri görmek için öğrenci (veya yeni öğrenci sekmesinde kampüs) ve öğretim yılı seçin.</div>';
+      $('#ne-total').textContent = fmtTL(0);
+      return;
+    }
+    try {
+      const d = await api(`/parameters?campus_id=${campus}&academic_year_id=${year}`);
+      if (!$('#ne-items')) return; // sayfa değişmiş
+      limitsState = d.limits;
+      itemsState = d.fee_items.map((i, idx) => ({
+        id: i.id, name: i.name, price: i.price, active: !!i.active,
+        checked: idx === 0 && i.price !== null, // ilk kalem (genelde Eğitim Ücreti) hazır seçili
+        qty: 1,
+      }));
+      renderItemsTable();
+    } catch (e) { toast(e.message, 'error'); }
+  }
 
   // ---- Öğrenci arama ----
   function showSelected() {
@@ -840,6 +936,7 @@ async function pageNewEnrollment() {
     if (selectedStudent) {
       $('#ne-grade').value = META.grades.includes(selectedStudent.grade) ? selectedStudent.grade : META.grades[0];
     }
+    loadItems();
   }
   let debounce;
   $('#ne-search').oninput = e => {
@@ -876,12 +973,19 @@ async function pageNewEnrollment() {
 
   // ---- Plan önizleme ----
   const planBody = () => ({
-    list_fee: Number($('#ne-fee').value),
+    list_fee: computeTotal(),
     discount_rate: Number($('#ne-discount').value) || 0,
     down_payment: Number($('#ne-down').value) || 0,
     installment_count: Number($('#ne-count').value),
     first_due_date: $('#ne-first-due').value,
   });
+  const selectedItems = () => itemsState
+    .filter(i => i.checked && i.price !== null)
+    .map(i => ({ fee_item_id: i.id, quantity: i.qty }));
+
+  $('#ne-year').onchange = loadItems;
+  const sfCampusSel = $('#sf-campus');
+  if (sfCampusSel) sfCampusSel.onchange = loadItems;
 
   $('#ne-preview').onclick = async () => {
     try {
@@ -917,7 +1021,19 @@ async function pageNewEnrollment() {
         const created = await api('/students', { method: 'POST', body });
         studentId = created.id;
         toast(`Öğrenci oluşturuldu: ${created.student_no}`, 'success');
+        // Kayıt adımı hata verirse ikinci denemede öğrenci mükerrer oluşmasın:
+        // öğrenciyi seçili hale getirip "Mevcut Öğrenci" moduna geç
+        selectedStudent = {
+          id: created.id, student_no: created.student_no,
+          first_name: body.first_name, last_name: body.last_name,
+          campus_id: body.campus_id, grade: body.grade,
+          campus_name: (CAMPUSES.find(c => c.id === Number(body.campus_id)) || {}).name || '',
+        };
+        setMode('existing');
+        showSelected();
       }
+      const items = selectedItems();
+      if (!items.length) throw new Error('En az bir ücret kalemi seçmelisiniz.');
       const enrollment = await api('/enrollments', {
         method: 'POST',
         body: {
@@ -926,6 +1042,7 @@ async function pageNewEnrollment() {
           enrollment_type: $('#ne-type').value,
           enrollment_date: $('#ne-date').value,
           grade: $('#ne-grade').value,
+          items,
           ...planBody(),
           discount_reason: $('#ne-discount-reason').value,
           default_payment_method: $('#ne-method').value,
@@ -972,6 +1089,7 @@ async function pagePayments() {
   async function load() {
     let d;
     try { d = await api('/payments?' + buildQs()); } catch (e) { toast(e.message, 'error'); return; }
+    if (!$('#pay-summary')) return; // sayfa değişmiş
     $('#pay-summary').innerHTML = `<p class="muted" style="margin-bottom:10px">
       Filtreye uyan <b>${d.total.toLocaleString('tr-TR')}</b> işlem · Toplam tutar: <b>${fmtTL(d.total_amount)}</b></p>`;
     $('#pay-table').innerHTML = `
@@ -1038,6 +1156,7 @@ async function pageInstallments() {
   async function load() {
     let d;
     try { d = await api('/payments/installments?' + buildQs()); } catch (e) { toast(e.message, 'error'); return; }
+    if (!$('#inst-summary')) return; // sayfa değişmiş
     $('#inst-summary').innerHTML = `<p class="muted" style="margin-bottom:10px">
       <b>${d.total.toLocaleString('tr-TR')}</b> açık taksit · Toplam kalan: <b style="color:var(--danger)">${fmtTL(d.total_remaining)}</b></p>`;
     $('#inst-table').innerHTML = `
@@ -1160,6 +1279,110 @@ async function pageReports() {
     } catch (e) { toast(e.message, 'error'); }
     excelBtn.disabled = false;
   };
+}
+
+// ================= Sayfa: Parametreler (MEB Ücret İlanları) =================
+async function pageParameters() {
+  const page = $('#page');
+  page.innerHTML = `
+    <div class="page-head"><div><h2>Parametreler · Ücret İlanları</h2>
+      <div class="crumb">MEB'e bildirilen liste fiyatları ve kampüs indirim sınırları — kayıtlar bu listeden yapılır</div></div></div>
+    <div class="card">
+      <div class="toolbar">
+        ${campusSelect('pr-campus', { allowAll: false })}
+        ${yearSelect('pr-year', { allowAll: false })}
+      </div>
+      <div id="pr-body"><div class="empty">Yükleniyor…</div></div>
+    </div>`;
+
+  const campusId = () => isHQ() ? $('#pr-campus').value : USER.campus.id;
+  const yearId = () => $('#pr-year').value;
+
+  async function load() {
+    let d;
+    try {
+      d = await api(`/parameters?campus_id=${campusId()}&academic_year_id=${yearId()}`);
+    } catch (e) { toast(e.message, 'error'); return; }
+    if (!$('#pr-body')) return; // sayfa değişmiş
+    const editable = can('settings.manage');
+    $('#pr-body').innerHTML = `
+      <div class="section-title">İlan Edilen Liste Fiyatları</div>
+      <p class="muted" style="font-size:12.5px; margin-bottom:10px">
+        Fiyatı boş bırakılan kalem bu kampüste kayıt sırasında seçilemez.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Ücret Kalemi</th><th>Durum</th><th class="num" style="width:220px">İlan Edilen Ücret (TL)</th>
+        ${editable ? '<th></th>' : ''}</tr></thead>
+        <tbody>${d.fee_items.map(i => `
+          <tr style="${!i.active ? 'opacity:.55' : ''}">
+            <td><b>${esc(i.name)}</b></td>
+            <td>${i.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}</td>
+            <td class="num"><input type="number" step="0.01" min="0" data-price="${i.id}"
+              value="${i.price ?? ''}" placeholder="İlan yok" ${!editable ? 'disabled' : ''}
+              style="text-align:right"></td>
+            ${editable ? `<td class="right"><button class="btn sm secondary" data-toggle="${i.id}" data-active="${i.active}">
+              ${i.active ? 'Pasifleştir' : 'Aktifleştir'}</button></td>` : ''}
+          </tr>`).join('')}
+        </tbody></table></div>
+      ${editable ? `
+      <div class="flex mt">
+        <input id="pr-new-item" placeholder="Yeni kalem adı (örn: Etüt Ücreti)" style="max-width:280px">
+        <button class="btn sm secondary" id="pr-add-item">+ Kalem Ekle</button>
+      </div>` : ''}
+      <div class="section-title mt">Kampüs İndirim Sınırları</div>
+      <p class="muted" style="font-size:12.5px; margin-bottom:10px">
+        Kayıt sırasında bu sınırların üzerinde indirim yapılamaz. Boş bırakılan sınır uygulanmaz.</p>
+      <div class="form-grid" style="max-width:520px">
+        <div class="field"><label>Azami İndirim Oranı (%)</label>
+          <input type="number" step="0.01" min="0" max="100" id="pr-max-rate"
+            value="${d.limits.max_discount_rate ?? ''}" placeholder="Sınırsız" ${!editable ? 'disabled' : ''}></div>
+        <div class="field"><label>Azami İndirim Tutarı (TL)</label>
+          <input type="number" step="0.01" min="0" id="pr-max-amount"
+            value="${d.limits.max_discount_amount ?? ''}" placeholder="Sınırsız" ${!editable ? 'disabled' : ''}></div>
+      </div>
+      ${editable ? '<div class="flex mt"><span class="spacer"></span><button class="btn" id="pr-save">💾 Parametreleri Kaydet</button></div>' : ''}`;
+
+    if (!editable) return;
+    $('#pr-save').onclick = async () => {
+      const prices = [...document.querySelectorAll('[data-price]')].map(inp => ({
+        fee_item_id: Number(inp.dataset.price),
+        price: inp.value === '' ? null : Number(inp.value),
+      }));
+      try {
+        await api('/parameters', {
+          method: 'PUT',
+          body: {
+            campus_id: Number(campusId()), academic_year_id: Number(yearId()),
+            prices,
+            max_discount_rate: $('#pr-max-rate').value === '' ? null : Number($('#pr-max-rate').value),
+            max_discount_amount: $('#pr-max-amount').value === '' ? null : Number($('#pr-max-amount').value),
+          },
+        });
+        toast('Parametreler kaydedildi.', 'success'); load();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+    $('#pr-add-item').onclick = async () => {
+      const name = $('#pr-new-item').value.trim();
+      if (!name) return toast('Kalem adı yazın.', 'error');
+      try {
+        await api('/parameters/items', { method: 'POST', body: { name } });
+        toast('Kalem eklendi. Fiyatını girip kaydetmeyi unutmayın.', 'success'); load();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+    document.querySelectorAll('[data-toggle]').forEach(b => b.onclick = async () => {
+      try {
+        await api('/parameters/items/' + b.dataset.toggle, {
+          method: 'PUT', body: { active: b.dataset.active !== '1' },
+        });
+        load();
+      } catch (e) { toast(e.message, 'error'); }
+    });
+  }
+
+  ['pr-campus', 'pr-year'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.onchange = load;
+  });
+  await load();
 }
 
 // ================= Sayfa: Kullanıcılar =================

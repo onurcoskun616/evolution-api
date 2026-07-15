@@ -57,6 +57,55 @@ function computeFees(b) {
   return { list, discountAmount, discountRate, net };
 }
 
+/**
+ * MEB ilan listesinden seçilen kalemleri doğrular ve liste ücretini hesaplar.
+ * Dönüş: { listFee, resolved: [{fee_item_id, name, unit_price, quantity, total}] }
+ */
+function resolveItems(campusId, yearId, items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('En az bir ücret kalemi seçilmelidir. Kalemler Parametreler sayfasındaki ilan listesinden gelir.');
+  }
+  const priceRows = db.prepare(`
+    SELECT cp.fee_item_id, cp.price, fi.name, fi.active
+    FROM campus_prices cp JOIN fee_items fi ON fi.id = cp.fee_item_id
+    WHERE cp.campus_id = ? AND cp.academic_year_id = ?`).all(campusId, yearId);
+  const priceMap = new Map(priceRows.map(r => [r.fee_item_id, r]));
+  if (priceMap.size === 0) {
+    throw new Error('Bu kampüs ve öğretim yılı için ilan edilmiş ücret listesi yok. Önce Parametreler sayfasından fiyatları girin.');
+  }
+  const resolved = [];
+  let listFee = 0;
+  const seen = new Set();
+  for (const it of items) {
+    const itemId = Number(it.fee_item_id);
+    if (seen.has(itemId)) continue;
+    seen.add(itemId);
+    const row = priceMap.get(itemId);
+    if (!row) throw new Error('Seçilen kalemlerden biri için bu kampüste ilan edilmiş fiyat yok.');
+    if (!row.active) throw new Error(`"${row.name}" kalemi pasif durumda.`);
+    const qty = Math.max(1, Math.min(20, parseInt(it.quantity, 10) || 1));
+    const total = money(row.price * qty);
+    resolved.push({ fee_item_id: itemId, name: row.name, unit_price: money(row.price), quantity: qty, total });
+    listFee = money(listFee + total);
+  }
+  if (listFee <= 0) throw new Error('Seçilen kalemlerin toplamı sıfırdan büyük olmalıdır.');
+  return { listFee, resolved };
+}
+
+/** Kampüsün indirim sınırlarını aşan indirimi engeller. */
+function assertDiscountWithinLimits(campusId, yearId, fees) {
+  const lim = db.prepare(`
+    SELECT max_discount_rate, max_discount_amount FROM campus_discount_limits
+    WHERE campus_id = ? AND academic_year_id = ?`).get(campusId, yearId);
+  if (!lim) return;
+  if (lim.max_discount_rate !== null && fees.discountRate > lim.max_discount_rate + 0.001) {
+    throw new Error(`İndirim oranı bu kampüs için izin verilen azami %${lim.max_discount_rate} sınırını aşıyor.`);
+  }
+  if (lim.max_discount_amount !== null && fees.discountAmount > money(lim.max_discount_amount) + 0.001) {
+    throw new Error(`İndirim tutarı bu kampüs için izin verilen azami ${Number(lim.max_discount_amount).toLocaleString('tr-TR')} TL sınırını aşıyor.`);
+  }
+}
+
 // ---- Taksit planı önizleme ----
 router.post('/preview-plan', requirePermission('enrollment.create'), (req, res) => {
   try {
@@ -119,9 +168,11 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
   if (b.default_payment_method && !PAYMENT_METHODS.includes(b.default_payment_method)) {
     return res.status(400).json({ error: 'Geçersiz ödeme türü.' });
   }
-  let fees, plan;
+  let fees, plan, itemsInfo;
   try {
-    fees = computeFees(b);
+    itemsInfo = resolveItems(student.campus_id, year.id, b.items);
+    fees = computeFees({ ...b, list_fee: itemsInfo.listFee });
+    assertDiscountWithinLimits(student.campus_id, year.id, fees);
     plan = buildPlan({
       net_fee: fees.net,
       down_payment: b.down_payment,
@@ -152,6 +203,12 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
       INSERT INTO installments (enrollment_id, seq_no, label, due_date, amount)
       VALUES (?, ?, ?, ?, ?)`);
     for (const p of plan) ins.run(enrollmentId, p.seq_no, p.label, p.due_date, p.amount);
+    const insItem = db.prepare(`
+      INSERT INTO enrollment_items (enrollment_id, fee_item_id, name, unit_price, quantity, total)
+      VALUES (?, ?, ?, ?, ?, ?)`);
+    for (const it of itemsInfo.resolved) {
+      insItem.run(enrollmentId, it.fee_item_id, it.name, it.unit_price, it.quantity, it.total);
+    }
     return enrollmentId;
   })();
   audit(req.user.id, 'CREATE', 'enrollment', result, `${student.student_no} / ${year.name}`);
@@ -169,15 +226,19 @@ router.put('/:id', requirePermission('enrollment.edit'), (req, res) => {
     'SELECT COUNT(*) AS c FROM payments WHERE enrollment_id = ? AND cancelled = 0').get(e.id).c;
 
   // Ücret/plan değişikliği yalnızca hiç tahsilat yoksa yapılabilir
-  const planFields = ['list_fee', 'discount_rate', 'discount_amount', 'down_payment', 'installment_count', 'first_due_date'];
+  const planFields = ['items', 'discount_rate', 'discount_amount', 'down_payment', 'installment_count', 'first_due_date'];
   const planChange = planFields.some(f => b[f] !== undefined);
   if (planChange) {
     if (paidCount > 0) {
       return res.status(400).json({ error: 'Tahsilat yapılmış kayıtta ücret planı değiştirilemez. Önce tahsilatları iptal edin.' });
     }
-    let fees, plan;
+    let fees, plan, itemsInfo = null;
     try {
-      fees = computeFees({ ...e, ...b });
+      if (b.items !== undefined) {
+        itemsInfo = resolveItems(e.campus_id, e.academic_year_id, b.items);
+      }
+      fees = computeFees({ ...e, ...b, list_fee: itemsInfo ? itemsInfo.listFee : e.list_fee });
+      assertDiscountWithinLimits(e.campus_id, e.academic_year_id, fees);
       plan = buildPlan({
         net_fee: fees.net,
         down_payment: b.down_payment !== undefined ? b.down_payment : e.down_payment,
@@ -198,6 +259,15 @@ router.put('/:id', requirePermission('enrollment.edit'), (req, res) => {
       const ins = db.prepare(
         'INSERT INTO installments (enrollment_id, seq_no, label, due_date, amount) VALUES (?, ?, ?, ?, ?)');
       for (const p of plan) ins.run(e.id, p.seq_no, p.label, p.due_date, p.amount);
+      if (itemsInfo) {
+        db.prepare('DELETE FROM enrollment_items WHERE enrollment_id = ?').run(e.id);
+        const insItem = db.prepare(`
+          INSERT INTO enrollment_items (enrollment_id, fee_item_id, name, unit_price, quantity, total)
+          VALUES (?, ?, ?, ?, ?, ?)`);
+        for (const it of itemsInfo.resolved) {
+          insItem.run(e.id, it.fee_item_id, it.name, it.unit_price, it.quantity, it.total);
+        }
+      }
     })();
   }
   db.prepare(`

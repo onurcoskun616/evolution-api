@@ -172,7 +172,55 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- MEB ücret ilanı: kalem kataloğu
+CREATE TABLE IF NOT EXISTS fee_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  active INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+-- Kampüs + öğretim yılı bazında ilan edilen liste fiyatları
+CREATE TABLE IF NOT EXISTS campus_prices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campus_id INTEGER NOT NULL REFERENCES campuses(id),
+  academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
+  fee_item_id INTEGER NOT NULL REFERENCES fee_items(id),
+  price REAL NOT NULL DEFAULT 0,
+  UNIQUE(campus_id, academic_year_id, fee_item_id)
+);
+
+-- Kampüs bazında izin verilen azami indirim (NULL = sınırsız)
+CREATE TABLE IF NOT EXISTS campus_discount_limits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campus_id INTEGER NOT NULL REFERENCES campuses(id),
+  academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
+  max_discount_rate REAL,
+  max_discount_amount REAL,
+  UNIQUE(campus_id, academic_year_id)
+);
+
+-- Kayıt sözleşmesindeki ücret kalemleri (ilan fiyatının anlık kopyasıyla)
+CREATE TABLE IF NOT EXISTS enrollment_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  enrollment_id INTEGER NOT NULL REFERENCES enrollments(id) ON DELETE CASCADE,
+  fee_item_id INTEGER REFERENCES fee_items(id),
+  name TEXT NOT NULL,
+  unit_price REAL NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 1,
+  total REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_enrollment_items ON enrollment_items(enrollment_id);
 `);
+
+// Varsayılan ücret kalemleri (boş katalogda bir kez eklenir)
+const DEFAULT_FEE_ITEMS = ['Eğitim Ücreti', 'Kıyafet Ücreti', 'Yemek Ücreti',
+  'Kırtasiye Ücreti', 'Kitap Ücreti', 'Servis Ücreti'];
+if (db.prepare('SELECT COUNT(*) AS c FROM fee_items').get().c === 0) {
+  const ins = db.prepare('INSERT INTO fee_items (name, sort_order) VALUES (?, ?)');
+  DEFAULT_FEE_ITEMS.forEach((name, i) => ins.run(name, i));
+}
 
 /** Para tutarlarını 2 ondalığa yuvarlar (kuruş hassasiyeti). */
 function money(x) {

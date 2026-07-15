@@ -21,6 +21,7 @@ app.use('/api/enrollments', authenticate, require('./src/routes/enrollments'));
 app.use('/api/payments', authenticate, require('./src/routes/payments'));
 app.use('/api/dashboard', authenticate, require('./src/routes/dashboard'));
 app.use('/api/reports', authenticate, require('./src/routes/reports'));
+app.use('/api/parameters', authenticate, require('./src/routes/parameters'));
 
 // Form ve filtreler için sabitler
 app.get('/api/meta', authenticate, (req, res) => {

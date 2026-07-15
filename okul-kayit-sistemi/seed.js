@@ -115,6 +115,26 @@ const insYear = db.prepare(
 const YEAR_2025 = Number(insYear.run('2025-2026', '2025-09-08', '2026-06-19', 0).lastInsertRowid);
 const YEAR_2026 = Number(insYear.run('2026-2027', '2026-09-07', '2027-06-18', 1).lastInsertRowid);
 
+// ---- MEB ilan listeleri (kampüs + yıl bazında liste fiyatları ve indirim sınırları) ----
+const feeItems = db.prepare('SELECT id, name FROM fee_items ORDER BY sort_order, id').all();
+const BASE_PRICES = {
+  'Eğitim Ücreti': 180000, 'Kıyafet Ücreti': 14000, 'Yemek Ücreti': 38000,
+  'Kırtasiye Ücreti': 6500, 'Kitap Ücreti': 9500, 'Servis Ücreti': 32000,
+};
+const insPrice = db.prepare(
+  'INSERT INTO campus_prices (campus_id, academic_year_id, fee_item_id, price) VALUES (?, ?, ?, ?)');
+const insLimit = db.prepare(
+  'INSERT INTO campus_discount_limits (campus_id, academic_year_id, max_discount_rate, max_discount_amount) VALUES (?, ?, ?, ?)');
+for (const c of campusIds) {
+  for (const [yearId, factor] of [[YEAR_2025, 1], [YEAR_2026, 1.35]]) {
+    for (const fi of feeItems) {
+      const base = BASE_PRICES[fi.name] || 10000;
+      insPrice.run(c.id, yearId, fi.id, Math.round(base * factor * (0.95 + rnd() * 0.1) / 100) * 100);
+    }
+    insLimit.run(c.id, yearId, 25, 100000);
+  }
+}
+
 // ---- Öğrenciler + kayıtlar + taksitler + tahsilatlar ----
 const insStudent = db.prepare(`
   INSERT INTO students (student_no, tc_no, first_name, last_name, birth_date, birth_place, gender,
