@@ -489,14 +489,19 @@ async function pageStudentDetail(id) {
       ${e.items && e.items.length ? `
       <div class="section-title">Ücret Kalemleri (İlan Listesinden)</div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Kalem</th><th class="num">İlan Fiyatı</th><th class="num">Adet</th><th class="num">Tutar</th></tr></thead>
+        <thead><tr><th>Kalem</th><th class="num">İlan Fiyatı</th><th class="num">Adet</th>
+        <th class="num">Tutar</th><th class="num">İndirim</th><th class="num">Net</th></tr></thead>
         <tbody>${e.items.map(it => `<tr>
           <td>${esc(it.name)}</td>
           <td class="num">${fmtTL(it.unit_price)}</td>
           <td class="num">${it.quantity}</td>
-          <td class="num"><b>${fmtTL(it.total)}</b></td></tr>`).join('')}
-        <tr><td colspan="3"><b>Liste Ücreti Toplamı</b></td>
-          <td class="num"><b>${fmtTL(e.items.reduce((a, x) => a + x.total, 0))}</b></td></tr>
+          <td class="num">${fmtTL(it.total)}</td>
+          <td class="num" style="color:var(--danger)">${it.discount_amount ? `${fmtTL(it.discount_amount)}${it.discount_rate ? ` (%${it.discount_rate})` : ''}` : '-'}</td>
+          <td class="num"><b>${fmtTL(it.net_total ?? it.total)}</b></td></tr>`).join('')}
+        <tr><td colspan="3"><b>TOPLAM</b></td>
+          <td class="num"><b>${fmtTL(e.items.reduce((a, x) => a + x.total, 0))}</b></td>
+          <td class="num" style="color:var(--danger)"><b>${fmtTL(e.items.reduce((a, x) => a + (x.discount_amount || 0), 0))}</b></td>
+          <td class="num"><b>${fmtTL(e.items.reduce((a, x) => a + (x.net_total ?? x.total), 0))}</b></td></tr>
         </tbody></table></div>` : ''}
       <div class="section-title">Taksit Planı</div>
       <div class="table-wrap"><table>
@@ -802,8 +807,10 @@ async function pageNewEnrollment() {
     <div class="card">
       <h3>2. Ücret Kalemleri <span class="muted" style="font-weight:400; font-size:12.5px">· MEB'e ilan edilen liste fiyatlarından</span></h3>
       <div id="ne-items"><div class="empty">Kalemleri görmek için öğrenci (veya yeni öğrenci sekmesinde kampüs) ve öğretim yılı seçin.</div></div>
-      <div class="flex mt" style="justify-content:flex-end; font-size:15px">
-        Liste Ücreti Toplamı:&nbsp;<b id="ne-total">₺0,00</b>
+      <div class="flex mt" style="justify-content:flex-end; gap:22px; font-size:14px">
+        <span>Liste: <b id="ne-total-list">₺0,00</b></span>
+        <span style="color:var(--danger)">İndirim: <b id="ne-total-disc">₺0,00</b></span>
+        <span style="font-size:15px">Net Toplam: <b id="ne-total-net">₺0,00</b></span>
       </div>
     </div>
 
@@ -817,7 +824,6 @@ async function pageNewEnrollment() {
         <div class="field"><label>Kayıt Sınıfı</label><select id="ne-grade">
           ${META.grades.map(g => `<option>${g}</option>`).join('')}</select></div>
         <div class="field"><label>Kayıt Tarihi</label><input type="date" id="ne-date" value="${todayStr()}"></div>
-        <div class="field"><label>İndirim Oranı (%)</label><input type="number" step="0.01" min="0" max="100" id="ne-discount" value="0"></div>
         <div class="field"><label>İndirim Gerekçesi</label><input id="ne-discount-reason" placeholder="Kardeş, erken kayıt, burs…"></div>
         <div class="field"><label>Peşinat (TL)</label><input type="number" step="0.01" min="0" id="ne-down" value="0"></div>
         <div class="field"><label>Taksit Sayısı</label><select id="ne-count">
@@ -855,7 +861,7 @@ async function pageNewEnrollment() {
   $('#tab-existing').onclick = () => setMode('existing');
   $('#tab-new').onclick = () => setMode('new');
 
-  // ---- Ücret kalemleri (MEB ilan listesi) ----
+  // ---- Ücret kalemleri (MEB ilan listesi, kalem bazlı indirim) ----
   let itemsState = [];
   let limitsState = null;
 
@@ -864,42 +870,82 @@ async function pageNewEnrollment() {
     return isHQ() ? Number($('#sf-campus')?.value) : USER.campus.id;
   };
 
-  const computeTotal = () => itemsState.reduce((a, i) =>
-    i.checked && i.price ? a + i.price * i.qty : a, 0);
+  const itemGross = i => (i.checked && i.price ? i.price * i.qty : 0);
+  const itemDiscount = i => {
+    const gross = itemGross(i);
+    if (!gross) return 0;
+    if (i.discRate) return Math.min(gross, Math.round(gross * i.discRate) / 100);
+    if (i.discAmount) return Math.min(gross, i.discAmount);
+    return 0;
+  };
+  const totalGross = () => itemsState.reduce((a, i) => a + itemGross(i), 0);
+  const totalDiscount = () => itemsState.reduce((a, i) => a + itemDiscount(i), 0);
 
   function renderItemsTable() {
     const priced = itemsState.filter(i => i.active);
     $('#ne-items').innerHTML = priced.length ? `
       <div class="table-wrap"><table>
         <thead><tr><th style="width:40px"></th><th>Kalem</th><th class="num">İlan Fiyatı</th>
-        <th class="num" style="width:90px">Adet</th><th class="num">Tutar</th></tr></thead>
-        <tbody>${priced.map((i, idx) => `
+        <th class="num" style="width:80px">Adet</th><th class="num">Tutar</th>
+        <th class="num" style="width:100px">İndirim %</th><th class="num" style="width:130px">İndirim TL</th>
+        <th class="num">Net</th></tr></thead>
+        <tbody>${priced.map((i, idx) => {
+          const gross = itemGross(i);
+          const disc = itemDiscount(i);
+          const dis = i.price === null || !i.checked ? 'disabled' : '';
+          return `
           <tr style="${i.price === null ? 'opacity:.5' : ''}">
             <td><input type="checkbox" style="width:auto" data-item-check="${idx}"
               ${i.checked ? 'checked' : ''} ${i.price === null ? 'disabled' : ''}></td>
             <td><b>${esc(i.name)}</b>${i.price === null ? ' <span class="muted" style="font-size:11.5px">(ilan edilmemiş)</span>' : ''}</td>
             <td class="num">${i.price === null ? '-' : fmtTL(i.price)}</td>
             <td class="num"><input type="number" min="1" max="20" value="${i.qty}" data-item-qty="${idx}"
-              style="width:70px; text-align:right" ${i.price === null || !i.checked ? 'disabled' : ''}></td>
-            <td class="num"><b>${i.checked && i.price ? fmtTL(i.price * i.qty) : '-'}</b></td>
-          </tr>`).join('')}
-        </tbody></table></div>` :
+              style="width:64px; text-align:right" ${dis}></td>
+            <td class="num">${i.checked && i.price ? fmtTL(gross) : '-'}</td>
+            <td class="num"><input type="number" min="0" max="100" step="0.01" placeholder="%"
+              value="${i.discRate || ''}" data-item-rate="${idx}" style="width:80px; text-align:right" ${dis}></td>
+            <td class="num"><input type="number" min="0" step="0.01" placeholder="TL"
+              value="${i.discRate ? disc.toFixed(2) : (i.discAmount || '')}" data-item-amount="${idx}"
+              style="width:110px; text-align:right" ${dis} ${i.discRate ? 'readonly' : ''}></td>
+            <td class="num"><b>${i.checked && i.price ? fmtTL(gross - disc) : '-'}</b></td>
+          </tr>`;
+        }).join('')}
+        </tbody></table></div>
+      <p class="muted" style="font-size:12px; margin-top:6px">Her kaleme ayrı indirim uygulayabilirsiniz:
+        oran (%) girerseniz tutar otomatik hesaplanır; oranı boş bırakıp doğrudan TL tutarı da girebilirsiniz.</p>` :
       '<div class="empty">Bu kampüs ve öğretim yılı için ilan edilmiş ücret listesi yok.<br>Önce <b>Parametreler</b> sayfasından liste fiyatlarını girin.</div>';
-    $('#ne-total').textContent = fmtTL(computeTotal());
+    $('#ne-total-list').textContent = fmtTL(totalGross());
+    $('#ne-total-disc').textContent = fmtTL(totalDiscount());
+    $('#ne-total-net').textContent = fmtTL(totalGross() - totalDiscount());
     $('#ne-limit-hint').textContent = limitsState &&
       (limitsState.max_discount_rate !== null || limitsState.max_discount_amount !== null)
-      ? 'Bu kampüste izin verilen azami indirim: ' +
+      ? 'Bu kampüste izin verilen azami toplam indirim: ' +
         [limitsState.max_discount_rate !== null ? `%${limitsState.max_discount_rate}` : null,
          limitsState.max_discount_amount !== null ? fmtTL(limitsState.max_discount_amount) : null]
           .filter(Boolean).join(' ve ')
       : '';
+    const active = itemsState.filter(i => i.active);
     $('#ne-items').querySelectorAll('[data-item-check]').forEach(cb => cb.onchange = () => {
-      itemsState.filter(i => i.active)[Number(cb.dataset.itemCheck)].checked = cb.checked;
+      active[Number(cb.dataset.itemCheck)].checked = cb.checked;
       renderItemsTable();
     });
     $('#ne-items').querySelectorAll('[data-item-qty]').forEach(inp => inp.onchange = () => {
-      const it = itemsState.filter(i => i.active)[Number(inp.dataset.itemQty)];
+      const it = active[Number(inp.dataset.itemQty)];
       it.qty = Math.max(1, Math.min(20, parseInt(inp.value, 10) || 1));
+      renderItemsTable();
+    });
+    $('#ne-items').querySelectorAll('[data-item-rate]').forEach(inp => inp.onchange = () => {
+      const it = active[Number(inp.dataset.itemRate)];
+      const v = parseFloat(inp.value);
+      it.discRate = isNaN(v) || v <= 0 ? 0 : Math.min(100, v);
+      if (it.discRate) it.discAmount = 0;
+      renderItemsTable();
+    });
+    $('#ne-items').querySelectorAll('[data-item-amount]').forEach(inp => inp.onchange = () => {
+      const it = active[Number(inp.dataset.itemAmount)];
+      if (it.discRate) return; // oran girildiyse tutar otomatik
+      const v = parseFloat(inp.value);
+      it.discAmount = isNaN(v) || v <= 0 ? 0 : v;
       renderItemsTable();
     });
   }
@@ -920,7 +966,7 @@ async function pageNewEnrollment() {
       itemsState = d.fee_items.map((i, idx) => ({
         id: i.id, name: i.name, price: i.price, active: !!i.active,
         checked: idx === 0 && i.price !== null, // ilk kalem (genelde Eğitim Ücreti) hazır seçili
-        qty: 1,
+        qty: 1, discRate: 0, discAmount: 0,
       }));
       renderItemsTable();
     } catch (e) { toast(e.message, 'error'); }
@@ -973,15 +1019,19 @@ async function pageNewEnrollment() {
 
   // ---- Plan önizleme ----
   const planBody = () => ({
-    list_fee: computeTotal(),
-    discount_rate: Number($('#ne-discount').value) || 0,
+    list_fee: totalGross(),
+    discount_amount: totalDiscount(),
     down_payment: Number($('#ne-down').value) || 0,
     installment_count: Number($('#ne-count').value),
     first_due_date: $('#ne-first-due').value,
   });
   const selectedItems = () => itemsState
     .filter(i => i.checked && i.price !== null)
-    .map(i => ({ fee_item_id: i.id, quantity: i.qty }));
+    .map(i => ({
+      fee_item_id: i.id, quantity: i.qty,
+      discount_rate: i.discRate || 0,
+      discount_amount: i.discRate ? 0 : (i.discAmount || 0),
+    }));
 
   $('#ne-year').onchange = loadItems;
   const sfCampusSel = $('#sf-campus');

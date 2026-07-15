@@ -201,7 +201,7 @@ CREATE TABLE IF NOT EXISTS campus_discount_limits (
   UNIQUE(campus_id, academic_year_id)
 );
 
--- Kayıt sözleşmesindeki ücret kalemleri (ilan fiyatının anlık kopyasıyla)
+-- Kayıt sözleşmesindeki ücret kalemleri (ilan fiyatının anlık kopyası + kalem bazlı indirim)
 CREATE TABLE IF NOT EXISTS enrollment_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   enrollment_id INTEGER NOT NULL REFERENCES enrollments(id) ON DELETE CASCADE,
@@ -209,10 +209,24 @@ CREATE TABLE IF NOT EXISTS enrollment_items (
   name TEXT NOT NULL,
   unit_price REAL NOT NULL,
   quantity INTEGER NOT NULL DEFAULT 1,
-  total REAL NOT NULL
+  total REAL NOT NULL,
+  discount_rate REAL NOT NULL DEFAULT 0,
+  discount_amount REAL NOT NULL DEFAULT 0,
+  net_total REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_enrollment_items ON enrollment_items(enrollment_id);
 `);
+
+// Eski veritabanları için kolon geçişi (kalem bazlı indirim alanları)
+const eiCols = db.prepare('PRAGMA table_info(enrollment_items)').all().map(c => c.name);
+if (!eiCols.includes('discount_rate')) {
+  db.exec(`
+    ALTER TABLE enrollment_items ADD COLUMN discount_rate REAL NOT NULL DEFAULT 0;
+    ALTER TABLE enrollment_items ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0;
+    ALTER TABLE enrollment_items ADD COLUMN net_total REAL NOT NULL DEFAULT 0;
+    UPDATE enrollment_items SET net_total = total;
+  `);
+}
 
 // Varsayılan ücret kalemleri (boş katalogda bir kez eklenir)
 const DEFAULT_FEE_ITEMS = ['Eğitim Ücreti', 'Kıyafet Ücreti', 'Yemek Ücreti',

@@ -58,8 +58,8 @@ function computeFees(b) {
 }
 
 /**
- * MEB ilan listesinden seçilen kalemleri doğrular ve liste ücretini hesaplar.
- * Dönüş: { listFee, resolved: [{fee_item_id, name, unit_price, quantity, total}] }
+ * MEB ilan listesinden seçilen kalemleri doğrular; kalem bazlı indirimleri
+ * (oran VEYA tutar) uygulayıp liste/indirim/net toplamlarını hesaplar.
  */
 function resolveItems(campusId, yearId, items) {
   if (!Array.isArray(items) || items.length === 0) {
@@ -75,6 +75,7 @@ function resolveItems(campusId, yearId, items) {
   }
   const resolved = [];
   let listFee = 0;
+  let discountTotal = 0;
   const seen = new Set();
   for (const it of items) {
     const itemId = Number(it.fee_item_id);
@@ -84,12 +85,42 @@ function resolveItems(campusId, yearId, items) {
     if (!row) throw new Error('Seçilen kalemlerden biri için bu kampüste ilan edilmiş fiyat yok.');
     if (!row.active) throw new Error(`"${row.name}" kalemi pasif durumda.`);
     const qty = Math.max(1, Math.min(20, parseInt(it.quantity, 10) || 1));
-    const total = money(row.price * qty);
-    resolved.push({ fee_item_id: itemId, name: row.name, unit_price: money(row.price), quantity: qty, total });
-    listFee = money(listFee + total);
+    const gross = money(row.price * qty);
+    // Kalem bazlı indirim: oran veya tutar
+    let dRate = Number(it.discount_rate) || 0;
+    let dAmount = money(it.discount_amount);
+    if (dRate < 0 || dRate > 100) {
+      throw new Error(`"${row.name}" için indirim oranı 0-100 arasında olmalıdır.`);
+    }
+    if (dRate > 0 && !dAmount) dAmount = money(gross * dRate / 100);
+    if (dAmount < 0 || dAmount > gross) {
+      throw new Error(`"${row.name}" için indirim tutarı kalem tutarını aşamaz.`);
+    }
+    if (!dRate && dAmount) dRate = Math.round((dAmount / gross) * 10000) / 100;
+    const netTotal = money(gross - dAmount);
+    resolved.push({
+      fee_item_id: itemId, name: row.name, unit_price: money(row.price), quantity: qty,
+      total: gross, discount_rate: dRate, discount_amount: dAmount, net_total: netTotal,
+    });
+    listFee = money(listFee + gross);
+    discountTotal = money(discountTotal + dAmount);
   }
   if (listFee <= 0) throw new Error('Seçilen kalemlerin toplamı sıfırdan büyük olmalıdır.');
-  return { listFee, resolved };
+  return { listFee, discountTotal, resolved };
+}
+
+/** Kalem toplamlarından kayıt geneli ücret özetini üretir. */
+function feesFromItems(itemsInfo) {
+  const list = itemsInfo.listFee;
+  const discountAmount = itemsInfo.discountTotal;
+  const net = money(list - discountAmount);
+  if (net < 0) throw new Error('Net ücret sıfırın altına inemez.');
+  return {
+    list,
+    discountAmount,
+    discountRate: list > 0 ? Math.round((discountAmount / list) * 10000) / 100 : 0,
+    net,
+  };
 }
 
 /** Kampüsün indirim sınırlarını aşan indirimi engeller. */
@@ -171,7 +202,7 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
   let fees, plan, itemsInfo;
   try {
     itemsInfo = resolveItems(student.campus_id, year.id, b.items);
-    fees = computeFees({ ...b, list_fee: itemsInfo.listFee });
+    fees = feesFromItems(itemsInfo);
     assertDiscountWithinLimits(student.campus_id, year.id, fees);
     plan = buildPlan({
       net_fee: fees.net,
@@ -204,10 +235,12 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
       VALUES (?, ?, ?, ?, ?)`);
     for (const p of plan) ins.run(enrollmentId, p.seq_no, p.label, p.due_date, p.amount);
     const insItem = db.prepare(`
-      INSERT INTO enrollment_items (enrollment_id, fee_item_id, name, unit_price, quantity, total)
-      VALUES (?, ?, ?, ?, ?, ?)`);
+      INSERT INTO enrollment_items (enrollment_id, fee_item_id, name, unit_price, quantity, total,
+        discount_rate, discount_amount, net_total)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const it of itemsInfo.resolved) {
-      insItem.run(enrollmentId, it.fee_item_id, it.name, it.unit_price, it.quantity, it.total);
+      insItem.run(enrollmentId, it.fee_item_id, it.name, it.unit_price, it.quantity, it.total,
+        it.discount_rate, it.discount_amount, it.net_total);
     }
     return enrollmentId;
   })();
@@ -226,7 +259,7 @@ router.put('/:id', requirePermission('enrollment.edit'), (req, res) => {
     'SELECT COUNT(*) AS c FROM payments WHERE enrollment_id = ? AND cancelled = 0').get(e.id).c;
 
   // Ücret/plan değişikliği yalnızca hiç tahsilat yoksa yapılabilir
-  const planFields = ['items', 'discount_rate', 'discount_amount', 'down_payment', 'installment_count', 'first_due_date'];
+  const planFields = ['items', 'down_payment', 'installment_count', 'first_due_date'];
   const planChange = planFields.some(f => b[f] !== undefined);
   if (planChange) {
     if (paidCount > 0) {
@@ -236,8 +269,11 @@ router.put('/:id', requirePermission('enrollment.edit'), (req, res) => {
     try {
       if (b.items !== undefined) {
         itemsInfo = resolveItems(e.campus_id, e.academic_year_id, b.items);
+        fees = feesFromItems(itemsInfo);
+      } else {
+        // Kalemler değişmiyorsa mevcut ücret özeti korunur, yalnızca plan yeniden kurulur
+        fees = { list: e.list_fee, discountAmount: e.discount_amount, discountRate: e.discount_rate, net: e.net_fee };
       }
-      fees = computeFees({ ...e, ...b, list_fee: itemsInfo ? itemsInfo.listFee : e.list_fee });
       assertDiscountWithinLimits(e.campus_id, e.academic_year_id, fees);
       plan = buildPlan({
         net_fee: fees.net,
@@ -262,10 +298,12 @@ router.put('/:id', requirePermission('enrollment.edit'), (req, res) => {
       if (itemsInfo) {
         db.prepare('DELETE FROM enrollment_items WHERE enrollment_id = ?').run(e.id);
         const insItem = db.prepare(`
-          INSERT INTO enrollment_items (enrollment_id, fee_item_id, name, unit_price, quantity, total)
-          VALUES (?, ?, ?, ?, ?, ?)`);
+          INSERT INTO enrollment_items (enrollment_id, fee_item_id, name, unit_price, quantity, total,
+            discount_rate, discount_amount, net_total)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
         for (const it of itemsInfo.resolved) {
-          insItem.run(e.id, it.fee_item_id, it.name, it.unit_price, it.quantity, it.total);
+          insItem.run(e.id, it.fee_item_id, it.name, it.unit_price, it.quantity, it.total,
+            it.discount_rate, it.discount_amount, it.net_total);
         }
       }
     })();

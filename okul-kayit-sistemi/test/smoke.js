@@ -176,17 +176,23 @@ async function main() {
     assert.equal(r.data.limits.max_discount_amount, 100000);
   });
 
-  await test('Kayıt oluşturma (ilan kalemleriyle: eğitim+yemek, KMH, 9 taksit)', async () => {
-    const chosen = [pricedItems[0], pricedItems[2]];
-    const listFee = Math.round((chosen[0].price + chosen[1].price) * 100) / 100;
-    expectedNet = Math.round(listFee * 0.85 * 100) / 100;
+  await test('Kayıt oluşturma (kalem bazlı indirim: eğitim %15, yemek 5000 TL)', async () => {
+    const money = x => Math.round(x * 100) / 100;
+    const [egitim, yemek] = [pricedItems[0], pricedItems[2]];
+    const listFee = money(egitim.price + yemek.price);
+    const egitimDisc = money(egitim.price * 0.15);
+    const expectedDisc = money(egitimDisc + 5000);
+    expectedNet = money(listFee - expectedDisc);
     const r = await req('POST', '/enrollments', {
       token: campusToken,
       body: {
         student_id: studentId, academic_year_id: activeYearId,
         enrollment_type: 'YENI_KAYIT', grade: '5',
-        items: chosen.map(c => ({ fee_item_id: c.id, quantity: 1 })),
-        discount_rate: 15, discount_reason: 'Erken kayıt indirimi',
+        items: [
+          { fee_item_id: egitim.id, quantity: 1, discount_rate: 15 },
+          { fee_item_id: yemek.id, quantity: 1, discount_amount: 5000 },
+        ],
+        discount_reason: 'Erken kayıt + yemek desteği',
         down_payment: 10000, installment_count: 9, first_due_date: '2026-09-15',
         default_payment_method: 'KMH', payer_name: 'Test Anne', payer_phone: '0532 111 22 33',
       },
@@ -196,12 +202,35 @@ async function main() {
     const d = await req('GET', '/students/' + studentId, { token: campusToken });
     const e = d.data.enrollments.find(x => x.id === enrollmentId);
     assert.equal(e.list_fee, listFee, `liste ücreti kalemlerden hesaplanmalı: ${e.list_fee} != ${listFee}`);
+    assert.equal(e.discount_amount, expectedDisc, `indirim toplamı: ${e.discount_amount} != ${expectedDisc}`);
     assert.equal(e.net_fee, expectedNet);
     assert.equal(e.items.length, 2);
+    const eItem = e.items.find(i => i.fee_item_id === egitim.id);
+    assert.equal(eItem.discount_rate, 15);
+    assert.equal(eItem.discount_amount, egitimDisc);
+    assert.equal(eItem.net_total, money(egitim.price - egitimDisc));
+    const yItem = e.items.find(i => i.fee_item_id === yemek.id);
+    assert.equal(yItem.discount_amount, 5000);
     assert.equal(e.installments.length, 10);
     installments = e.installments;
     const total = e.installments.reduce((a, i) => a + i.amount, 0);
-    assert.equal(Math.round(total * 100) / 100, expectedNet);
+    assert.equal(money(total), expectedNet);
+  });
+
+  await test('Kalem indirimi kalem tutarını aşamaz', async () => {
+    const s = await req('POST', '/students', {
+      token: campusToken, body: { first_name: 'Aşkın', last_name: 'İndirim', campus_id: campusId },
+    });
+    const r = await req('POST', '/enrollments', {
+      token: campusToken,
+      body: {
+        student_id: s.data.id, academic_year_id: activeYearId,
+        items: [{ fee_item_id: pricedItems[1].id, quantity: 1, discount_amount: pricedItems[1].price + 1000 }],
+        installment_count: 3, first_due_date: '2026-09-15',
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(/aşamaz/i.test(r.data.error), r.data.error);
   });
 
   await test('Aynı yıl için ikinci kayıt reddedilir', async () => {
@@ -224,24 +253,41 @@ async function main() {
     assert.ok(/kalem/i.test(r.data.error), r.data.error);
   });
 
-  await test('İndirim sınırı: azami oran (%25) aşılırsa kayıt reddedilir', async () => {
+  await test('İndirim sınırı: azami toplam oran (%25) aşılırsa kayıt reddedilir', async () => {
     const s = await req('POST', '/students', {
       token: campusToken, body: { first_name: 'İndirim', last_name: 'Sınırı', campus_id: campusId },
     });
-    const body = {
+    const mk = itemDiscount => ({
       student_id: s.data.id, academic_year_id: activeYearId,
-      items: [{ fee_item_id: pricedItems[0].id, quantity: 1 }],
+      items: [{ fee_item_id: pricedItems[0].id, quantity: 1, ...itemDiscount }],
       installment_count: 5, first_due_date: '2026-09-15',
-    };
+    });
     const rejected = await req('POST', '/enrollments', {
-      token: campusToken, body: { ...body, discount_rate: 40 },
+      token: campusToken, body: mk({ discount_rate: 40 }),
     });
     assert.equal(rejected.status, 400);
     assert.ok(/azami/i.test(rejected.data.error), rejected.data.error);
     const ok = await req('POST', '/enrollments', {
-      token: campusToken, body: { ...body, discount_rate: 20 },
+      token: campusToken, body: mk({ discount_rate: 20 }),
     });
     assert.equal(ok.status, 200, JSON.stringify(ok.data));
+  });
+
+  await test('İndirim sınırı: azami toplam tutar (100.000 TL) aşılırsa reddedilir', async () => {
+    const s = await req('POST', '/students', {
+      token: campusToken, body: { first_name: 'Tutar', last_name: 'Sınırı', campus_id: campusId },
+    });
+    // 2 adet eğitim ücreti -> yüksek brüt; 110.000 TL indirim oran sınırına takılmadan tutar sınırını aşar
+    const r = await req('POST', '/enrollments', {
+      token: campusToken,
+      body: {
+        student_id: s.data.id, academic_year_id: activeYearId,
+        items: [{ fee_item_id: pricedItems[0].id, quantity: 2, discount_amount: 110000 }],
+        installment_count: 5, first_due_date: '2026-09-15',
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(/azami.*TL|TL.*azami/i.test(r.data.error), r.data.error);
   });
 
   await test('Parametreler: kampüs müdürü düzenleyemez, genel merkez düzenler', async () => {
