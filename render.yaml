@@ -16,6 +16,8 @@ services:
         value: production
       - key: OKUL_JWT_SECRET
         generateValue: true   # Render güvenli rastgele değer üretir
+      - key: OKUL_ADMIN_SIFRE
+        generateValue: true   # admin şifresi: panelde Environment sekmesinden görünür
     disk:
       name: okul-data
       mountPath: /data
