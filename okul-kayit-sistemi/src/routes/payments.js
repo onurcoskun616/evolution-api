@@ -102,19 +102,31 @@ router.post('/', requirePermission('payment.create'), (req, res) => {
     }
   }
 
-  const paymentId = db.transaction(() => {
+  const result = db.transaction(() => {
+    // Makbuz no girilmediyse kampüs bazlı seri numara üret: KOD-YIL-000001
+    let receiptNo = String(b.receipt_no || '').trim();
+    if (!receiptNo) {
+      const campus = db.prepare('SELECT code FROM campuses WHERE id = ?').get(e.campus_id);
+      const prefix = `${campus.code}-${new Date().getFullYear()}-`;
+      const row = db.prepare(`
+        SELECT receipt_no FROM payments WHERE receipt_no LIKE ?
+        ORDER BY LENGTH(receipt_no) DESC, receipt_no DESC LIMIT 1`).get(prefix + '%');
+      let seq = 1;
+      if (row) seq = (parseInt(row.receipt_no.slice(prefix.length), 10) || 0) + 1;
+      receiptNo = prefix + String(seq).padStart(6, '0');
+    }
     const info = db.prepare(`
       INSERT INTO payments (enrollment_id, installment_id, payment_date, amount, method,
         receipt_no, reference, notes, received_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(e.id, installmentId, paymentDate, amount, b.method,
-        b.receipt_no || '', b.reference || '', b.notes || '', req.user.id);
+        receiptNo, b.reference || '', b.notes || '', req.user.id);
     if (installmentId) refreshInstallmentStatus(installmentId);
     refreshEnrollmentStatus(e.id);
-    return info.lastInsertRowid;
+    return { id: info.lastInsertRowid, receipt_no: receiptNo };
   })();
-  audit(req.user.id, 'CREATE', 'payment', paymentId, `${amount} TL / ${b.method}`);
-  res.json({ id: paymentId });
+  audit(req.user.id, 'CREATE', 'payment', result.id, `${amount} TL / ${b.method} / ${result.receipt_no}`);
+  res.json(result);
 });
 
 // ---- Tahsilat iptal ----

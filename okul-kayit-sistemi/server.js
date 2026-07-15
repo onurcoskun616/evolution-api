@@ -3,8 +3,10 @@
  * Çok kampüslü okul yönetimi: öğrenci kayıt, taksit/tahsilat takibi, raporlama.
  */
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const express = require('express');
-const { db } = require('./src/db');
+const { db, audit, today } = require('./src/db');
 const { authenticate, requirePermission, ROLE_LABELS } = require('./src/auth');
 const { METHOD_LABELS } = require('./src/routes/payments');
 
@@ -53,6 +55,17 @@ app.get('/api/audit', authenticate, requirePermission('audit.view'), (req, res) 
 });
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// Tam veritabanı yedeği (tutarlı anlık görüntü) — genel merkez indirir, güvenli yerde saklar.
+// Geri yükleme: sunucu kapalıyken indirilen dosya data/okul.db olarak kopyalanır.
+app.get('/api/backup', authenticate, requirePermission('settings.manage'), async (req, res, next) => {
+  try {
+    const tmpFile = path.join(os.tmpdir(), `okul-yedek-${process.pid}-${Date.now()}.db`);
+    await db.backup(tmpFile); // WAL dahil tutarlı kopya
+    audit(req.user.id, 'BACKUP', 'database', null, '');
+    res.download(tmpFile, `okul-yedek-${today()}.db`, () => fs.unlink(tmpFile, () => {}));
+  } catch (err) { next(err); }
+});
 
 // SPA fallback
 app.get(/^\/(?!api\/).*/, (req, res) => {

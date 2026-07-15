@@ -46,6 +46,21 @@ dondurulmuş satır, ₺ para biçimi, toplam satırı):
 6. Kampüs Özet Raporu (ciro, tahsilat oranı, gecikme)
 7. Ödeme Türü Dağılımı
 
+### 🖨️ Belge Çıktıları
+- **Tahsilat makbuzu (dekont)**: Her ödeme için tek tıkla yazdırılabilir, veli + kurum
+  nüshalı, yazıyla tutar içeren makbuz. Makbuz numaraları kampüs bazında otomatik seri üretilir.
+- **Senet (bono)**: Senetle ödeme yapacak veliler için açık taksitlerin her birine
+  vade/tutar/borçlu bilgileri doldurulmuş, imzaya hazır standart bono çıktısı.
+
+### 🔐 Veri Güvenliği ve Sağlamlık
+- Tüm para hareketleri **atomik işlemler** (transaction) içinde yazılır; taksit durumu
+  ve kayıt bakiyesi tahsilatla aynı işlemde güncellenir — yarım kayıt oluşamaz.
+- SQLite **WAL modu + foreign key** bütünlüğü; tahsilatlar silinmez, ancak gerekçeli
+  **iptal** edilir (kim, ne zaman, neden iptal etti kaydı tutulur).
+- Her kritik işlem **denetim kaydına** (audit log) yazılır.
+- **Tek tıkla tam veritabanı yedeği**: Parametreler sayfasındaki "Veritabanı Yedeği İndir"
+  düğmesi tutarlı bir anlık kopya indirir. Geri yükleme: dosyayı `data/okul.db` olarak koyun.
+
 ### 📈 Genel Bakış Paneli
 Aktif öğrenci, kayıt, ciro, tahsilat oranı, kalan bakiye, geciken tutar, bugünkü tahsilat,
 kampüs karşılaştırma tablosu, son 12 ay tahsilat grafiği, ödeme türü dağılımı.

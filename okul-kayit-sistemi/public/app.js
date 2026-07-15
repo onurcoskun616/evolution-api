@@ -35,6 +35,72 @@ const badge = (status, overdue) => {
   return `<span class="badge ${color}">${label}</span>`;
 };
 
+// ---- Tutarı yazıyla (senet ve makbuz için) ----
+const _ONES = ['', 'BİR', 'İKİ', 'ÜÇ', 'DÖRT', 'BEŞ', 'ALTI', 'YEDİ', 'SEKİZ', 'DOKUZ'];
+const _TENS = ['', 'ON', 'YİRMİ', 'OTUZ', 'KIRK', 'ELLİ', 'ALTMIŞ', 'YETMİŞ', 'SEKSEN', 'DOKSAN'];
+function _tripleTR(n) {
+  const h = Math.floor(n / 100), t = Math.floor((n % 100) / 10), o = n % 10;
+  return (h ? (h > 1 ? _ONES[h] : '') + 'YÜZ' : '') + _TENS[t] + _ONES[o];
+}
+function amountInWordsTR(amount) {
+  amount = Math.round((Number(amount) || 0) * 100) / 100;
+  let lira = Math.floor(amount);
+  const kurus = Math.round((amount - lira) * 100);
+  let liraText;
+  if (lira === 0) liraText = 'SIFIR';
+  else {
+    const groups = [];
+    while (lira > 0) { groups.push(lira % 1000); lira = Math.floor(lira / 1000); }
+    const SCALE = ['', 'BİN', 'MİLYON', 'MİLYAR'];
+    const parts = [];
+    for (let i = groups.length - 1; i >= 0; i--) {
+      const g = groups[i];
+      if (!g) continue;
+      parts.push((i === 1 && g === 1 ? '' : _tripleTR(g)) + SCALE[i]);
+    }
+    liraText = parts.join('');
+  }
+  return liraText + ' TÜRK LİRASI' + (kurus > 0 ? ' ' + _tripleTR(kurus) + ' KURUŞ' : '');
+}
+
+// ---- Yazdırma penceresi (dekont / senet) ----
+function printHTML(title, bodyHtml) {
+  const w = window.open('', '_blank', 'width=920,height=700');
+  if (!w) { toast('Tarayıcı açılır pencereyi engelledi. Lütfen bu site için izin verin.', 'error'); return; }
+  w.document.write(`<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8"><title>${esc(title)}</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 12.5px; color: #111; padding: 18px; }
+      .doc { border: 1.6px solid #222; border-radius: 6px; padding: 16px 18px; margin-bottom: 14px;
+             page-break-inside: avoid; }
+      .doc-head { display: flex; justify-content: space-between; align-items: flex-start;
+                  border-bottom: 1.4px solid #222; padding-bottom: 8px; margin-bottom: 10px; }
+      .doc-title { font-size: 15px; font-weight: 800; letter-spacing: .4px; }
+      .org { font-weight: 700; font-size: 13.5px; }
+      .org small { font-weight: 400; color: #444; display: block; }
+      .copy-tag { font-size: 10.5px; font-weight: 700; border: 1px solid #222; padding: 2px 8px; border-radius: 10px; }
+      table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+      td, th { padding: 5px 7px; border: 1px solid #999; text-align: left; vertical-align: top; }
+      th { background: #f0f0f0; font-size: 11px; text-transform: uppercase; }
+      .amount-big { font-size: 16px; font-weight: 800; }
+      .words { font-weight: 700; padding: 7px; border: 1px dashed #555; background: #fafafa; margin: 6px 0; }
+      .sig-row { display: flex; gap: 24px; margin-top: 18px; }
+      .sig { flex: 1; border-top: 1px solid #333; padding-top: 5px; text-align: center; font-size: 11px; min-height: 52px; }
+      .cutline { border-top: 1.5px dashed #888; margin: 12px 0; text-align: center; color: #888; font-size: 10px; }
+      .senet-text { line-height: 1.65; margin: 8px 0; text-align: justify; }
+      .muted { color: #555; }
+      .page-break { page-break-after: always; }
+      @media print { body { padding: 0; } .no-print { display: none; } }
+    </style></head><body>
+    <div class="no-print" style="text-align:right; margin-bottom:10px">
+      <button onclick="window.print()" style="padding:8px 18px; font-size:14px; cursor:pointer">🖨️ Yazdır</button>
+    </div>
+    ${bodyHtml}</body></html>`);
+  w.document.close();
+  w.focus();
+  setTimeout(() => { try { w.print(); } catch {} }, 400);
+}
+
 function toast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
@@ -472,6 +538,7 @@ async function pageStudentDetail(id) {
         <span class="muted" style="font-weight:400; font-size:12.5px">· ${esc(e.grade)}. sınıf · ${fmtDate(e.enrollment_date)}</span>
         <span class="spacer"></span>
         ${can('payment.create') && e.status !== 'IPTAL' && e.balance > 0 ? `<button class="btn sm success" data-pay="${e.id}">💰 Tahsilat Al</button>` : ''}
+        ${e.status !== 'IPTAL' && openInstallments.length ? `<button class="btn sm secondary" data-senet="${e.id}">📄 Senet Bas</button>` : ''}
         ${can('enrollment.cancel') && e.status !== 'IPTAL' ? `<button class="btn sm danger" data-cancel-enr="${e.id}">Kaydı İptal Et</button>` : ''}
       </h3>
       <div class="stat-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))">
@@ -521,7 +588,7 @@ async function pageStudentDetail(id) {
       <div class="section-title">Tahsilat Geçmişi</div>
       <div class="table-wrap"><table>
         <thead><tr><th>Tarih</th><th>Taksit</th><th class="num">Tutar</th><th>Ödeme Türü</th>
-        <th>Makbuz No</th><th>Tahsil Eden</th><th>Durum</th>${can('payment.cancel') ? '<th></th>' : ''}</tr></thead>
+        <th>Makbuz No</th><th>Tahsil Eden</th><th>Durum</th><th></th>${can('payment.cancel') ? '<th></th>' : ''}</tr></thead>
         <tbody>${e.payments.map(p => `
           <tr style="${p.cancelled ? 'opacity:.55; text-decoration:line-through' : ''}">
             <td>${fmtDate(p.payment_date)}</td>
@@ -531,8 +598,9 @@ async function pageStudentDetail(id) {
             <td>${esc(p.receipt_no || '-')}</td>
             <td>${esc(p.received_by_name || '-')}</td>
             <td>${p.cancelled ? '<span class="badge red">İptal</span>' : '<span class="badge green">Geçerli</span>'}</td>
+            <td>${!p.cancelled ? `<button class="btn sm secondary" data-print-pay="${p.id}" data-penr="${e.id}">🖨️ Dekont</button>` : ''}</td>
             ${can('payment.cancel') ? `<td>${!p.cancelled ? `<button class="btn sm danger" data-cancel-pay="${p.id}">İptal</button>` : ''}</td>` : ''}
-          </tr>`).join('') || '<tr><td colspan="8" class="empty">Tahsilat yok</td></tr>'}
+          </tr>`).join('') || '<tr><td colspan="9" class="empty">Tahsilat yok</td></tr>'}
         </tbody></table></div>
     </div>`;
   }).join('') || '<div class="card empty">Bu öğrencinin dönem kaydı bulunmuyor.</div>';
@@ -568,6 +636,16 @@ async function pageStudentDetail(id) {
     const e = d.enrollments.find(x => x.id === Number(b.dataset.enr));
     const inst = e.installments.find(i => i.id === Number(b.dataset.editInst));
     installmentEditModal(inst, reload);
+  });
+  const studentCampus = CAMPUSES.find(c => c.id === s.campus_id) || { name: s.campus_name };
+  page.querySelectorAll('[data-senet]').forEach(b => b.onclick = () => {
+    const e = d.enrollments.find(x => x.id === Number(b.dataset.senet));
+    printSenetler(s, studentCampus, e, d.parents);
+  });
+  page.querySelectorAll('[data-print-pay]').forEach(b => b.onclick = () => {
+    const e = d.enrollments.find(x => x.id === Number(b.dataset.penr));
+    const p = e.payments.find(x => x.id === Number(b.dataset.printPay));
+    printReceipt(s, studentCampus, e, p);
   });
 }
 
@@ -721,7 +799,7 @@ function paymentModal(enrollment, onSaved, preselectedInstallmentId) {
       area.querySelector('[data-x]').onclick = closeModal;
       area.querySelector('#pm-save').onclick = async () => {
         try {
-          await api('/payments', {
+          const saved = await api('/payments', {
             method: 'POST',
             body: {
               enrollment_id: enrollment.id,
@@ -733,7 +811,8 @@ function paymentModal(enrollment, onSaved, preselectedInstallmentId) {
               notes: area.querySelector('#pm-notes').value,
             },
           });
-          toast('Tahsilat kaydedildi.', 'success'); closeModal(); onSaved();
+          toast(`Tahsilat kaydedildi. Makbuz No: ${saved.receipt_no}. Dekontu tahsilat satırındaki 🖨️ düğmesiyle yazdırabilirsiniz.`, 'success');
+          closeModal(); onSaved();
         } catch (e) { toast(e.message, 'error'); }
       };
     },
@@ -763,6 +842,89 @@ function installmentEditModal(inst, onSaved) {
       };
     },
   });
+}
+
+// ---- Tahsilat makbuzu (dekont) yazdırma ----
+function printReceipt(student, campus, enrollment, payment) {
+  const copy = tag => `
+    <div class="doc">
+      <div class="doc-head">
+        <div class="org">${esc(campus?.name || '')}
+          <small>${esc(campus?.address || '')} ${campus?.phone ? '· Tel: ' + esc(campus.phone) : ''}</small></div>
+        <div style="text-align:right">
+          <div class="doc-title">TAHSİLAT MAKBUZU</div>
+          <div class="muted">Makbuz No: <b>${esc(payment.receipt_no || '-')}</b></div>
+          <div class="muted">Tarih: <b>${fmtDate(payment.payment_date)}</b></div>
+        </div>
+      </div>
+      <table>
+        <tr><th style="width:22%">Öğrenci</th><td>${esc(student.first_name)} ${esc(student.last_name)} (${esc(student.student_no)})</td>
+            <th style="width:18%">Sınıf</th><td>${esc(enrollment.grade || student.grade || '-')}</td></tr>
+        <tr><th>Öğretim Yılı</th><td>${esc(enrollment.academic_year_name || '')}</td>
+            <th>Ödeme Türü</th><td>${METHOD_LABELS[payment.method] || payment.method}</td></tr>
+        <tr><th>Ödeme Kalemi</th><td>${esc(payment.installment_label || 'Genel Ödeme')}</td>
+            <th>Ödemeyi Yapan</th><td>${esc(enrollment.payer_name || '-')}</td></tr>
+        <tr><th>Tahsil Edilen</th><td colspan="3" class="amount-big">${fmtTL(payment.amount)}</td></tr>
+      </table>
+      <div class="words">YALNIZ: ${amountInWordsTR(payment.amount)}</div>
+      <div class="sig-row">
+        <div class="sig">Tahsil Eden<br><b>${esc(payment.received_by_name || '')}</b><br>İmza / Kaşe</div>
+        <div class="sig">Ödemeyi Yapan<br><b>${esc(enrollment.payer_name || '')}</b><br>İmza</div>
+      </div>
+      <div style="text-align:right; margin-top:6px"><span class="copy-tag">${tag}</span></div>
+    </div>`;
+  printHTML(`Makbuz ${payment.receipt_no || ''}`,
+    copy('VELİ NÜSHASI') + '<div class="cutline">✂ — — — — — — — — — — — — — — — — — — — — — —</div>' + copy('KURUM NÜSHASI'));
+}
+
+// ---- Senet (bono) yazdırma: açık her taksit için bir senet ----
+function printSenetler(student, campus, enrollment, parents) {
+  const open = enrollment.installments.filter(i =>
+    (i.status === 'BEKLIYOR' || i.status === 'KISMI') && (i.amount - i.paid_amount) > 0.009);
+  if (!open.length) { toast('Bu kayıtta senede bağlanacak açık taksit yok.', 'error'); return; }
+  const primary = (parents || []).find(p => p.is_primary) || (parents || [])[0] || {};
+  const borclu = {
+    name: enrollment.payer_name || primary.full_name || '',
+    tc: enrollment.payer_tc || primary.tc_no || '',
+    phone: enrollment.payer_phone || primary.phone || '',
+    address: primary.address || student.address || '',
+  };
+  const docs = open.map((inst, idx) => {
+    const tutar = Math.round((inst.amount - inst.paid_amount) * 100) / 100;
+    return `
+    <div class="doc" ${(idx + 1) % 3 === 0 ? 'style="page-break-after:always"' : ''}>
+      <div class="doc-head">
+        <div class="doc-title">BONO<br><small style="font-weight:400; font-size:10.5px">(EMRE MUHARRER SENET)</small></div>
+        <table style="width:auto; margin:0">
+          <tr><th>Senet No</th><td>${enrollment.id}-${inst.seq_no}</td>
+              <th>Tanzim Tarihi</th><td>${fmtDate(todayStr())}</td></tr>
+          <tr><th>Vade Tarihi</th><td><b>${fmtDate(inst.due_date)}</b></th>
+              <th>Tutar</th><td class="amount-big">${fmtTL(tutar)}</td></tr>
+        </table>
+      </div>
+      <div class="words">YALNIZ: ${amountInWordsTR(tutar)}</div>
+      <p class="senet-text">
+        İşbu bono karşılığında <b>${fmtDate(inst.due_date)}</b> tarihinde
+        <b>${esc(campus?.name || '')}</b> emrine yukarıda yazılı
+        <b>${fmtTL(tutar)}</b> (${amountInWordsTR(tutar)}) tutarını kayıtsız şartsız
+        ödeyeceğim. Bedeli malen ahzolunmuştur. İşbu bono
+        <b>${esc(student.first_name)} ${esc(student.last_name)} (${esc(student.student_no)})</b> adlı öğrencinin
+        <b>${esc(enrollment.academic_year_name || '')}</b> öğretim yılı ${esc(inst.label)} bedeline ilişkindir.
+        Ödeme yeri: ${esc(campus?.address || campus?.name || '')}.
+      </p>
+      <table>
+        <tr><th style="width:14%">Borçlu</th><td><b>${esc(borclu.name)}</b></td>
+            <th style="width:14%">T.C. No</th><td>${esc(borclu.tc || '-')}</td></tr>
+        <tr><th>Adres</th><td>${esc(borclu.address || '-')}</td>
+            <th>Telefon</th><td>${esc(borclu.phone || '-')}</td></tr>
+      </table>
+      <div class="sig-row">
+        <div class="sig">Alacaklı<br><b>${esc(campus?.name || '')}</b><br>Kaşe / İmza</div>
+        <div class="sig">Borçlu<br><b>${esc(borclu.name)}</b><br>İmza</div>
+      </div>
+    </div>`;
+  }).join('');
+  printHTML(`Senetler - ${student.student_no}`, docs);
 }
 
 // ================= Sayfa: Yeni Kayıt =================
@@ -1336,7 +1498,8 @@ async function pageParameters() {
   const page = $('#page');
   page.innerHTML = `
     <div class="page-head"><div><h2>Parametreler · Ücret İlanları</h2>
-      <div class="crumb">MEB'e bildirilen liste fiyatları ve kampüs indirim sınırları — kayıtlar bu listeden yapılır</div></div></div>
+      <div class="crumb">MEB'e bildirilen liste fiyatları ve kampüs indirim sınırları — kayıtlar bu listeden yapılır</div></div>
+      ${can('settings.manage') ? '<button class="btn secondary" id="pr-backup">💾 Veritabanı Yedeği İndir</button>' : ''}</div>
     <div class="card">
       <div class="toolbar">
         ${campusSelect('pr-campus', { allowAll: false })}
@@ -1432,6 +1595,15 @@ async function pageParameters() {
     const el = document.getElementById(id);
     if (el) el.onchange = load;
   });
+  const backupBtn = $('#pr-backup');
+  if (backupBtn) backupBtn.onclick = async () => {
+    backupBtn.disabled = true;
+    try {
+      await downloadExcel('/backup', `okul-yedek-${todayStr()}.db`);
+      toast('Yedek indirildi. Dosyayı güvenli bir yerde saklayın.', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+    backupBtn.disabled = false;
+  };
   await load();
 }
 

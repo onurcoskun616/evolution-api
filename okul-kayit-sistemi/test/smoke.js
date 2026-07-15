@@ -379,6 +379,33 @@ async function main() {
     assert.equal(r.status, 403);
   });
 
+  await test('Makbuz no otomatik üretilir (kampüs bazlı seri, ardışık)', async () => {
+    const taksit2 = installments.find(i => i.seq_no === 2);
+    const r1 = await req('POST', '/payments', {
+      token: muhasebeToken,
+      body: { enrollment_id: enrollmentId, installment_id: taksit2.id, amount: 100, method: 'SENET' },
+    });
+    assert.equal(r1.status, 200, JSON.stringify(r1.data));
+    assert.ok(/^MRK-\d{4}-\d{6}$/.test(r1.data.receipt_no), 'format hatalı: ' + r1.data.receipt_no);
+    const r2 = await req('POST', '/payments', {
+      token: muhasebeToken,
+      body: { enrollment_id: enrollmentId, installment_id: taksit2.id, amount: 100, method: 'SENET' },
+    });
+    const n1 = parseInt(r1.data.receipt_no.slice(-6), 10);
+    const n2 = parseInt(r2.data.receipt_no.slice(-6), 10);
+    assert.equal(n2, n1 + 1, `${r1.data.receipt_no} -> ${r2.data.receipt_no}`);
+  });
+
+  await test('Veritabanı yedeği indirilebilir (yalnız yetkili)', async () => {
+    const denied = await req('GET', '/backup', { token: muhasebeToken, raw: true });
+    assert.equal(denied.status, 403);
+    const res = await req('GET', '/backup', { token: hqToken, raw: true });
+    assert.equal(res.status, 200);
+    const buf = Buffer.from(await res.arrayBuffer());
+    assert.ok(buf.length > 1000000, `yedek boyutu ${buf.length}`);
+    assert.equal(buf.slice(0, 15).toString(), 'SQLite format 3');
+  });
+
   await test('Taksit vade/tutar düzenleme', async () => {
     const taksit2 = installments.find(i => i.seq_no === 2);
     const r = await req('PUT', `/enrollments/installments/${taksit2.id}`, {
