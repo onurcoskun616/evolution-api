@@ -51,7 +51,7 @@ Aktif öğrenci, kayıt, ciro, tahsilat oranı, kalan bakiye, geciken tutar, bug
 kampüs karşılaştırma tablosu, son 12 ay tahsilat grafiği, ödeme türü dağılımı.
 Genel merkez kampüs ve öğretim yılı bazında filtreleyebilir.
 
-## Kurulum ve Çalıştırma
+## Kurulum ve Çalıştırma (geliştirme / demo)
 
 ```bash
 cd okul-kayit-sistemi
@@ -59,6 +59,42 @@ npm install          # bağımlılıkları kurar
 npm run seed         # 5 kampüs + 15.000 öğrencilik demo verisini oluşturur (DİKKAT: veritabanını sıfırlar)
 npm start            # http://localhost:3000
 ```
+
+## 🚀 Canlıya Alma (üretim)
+
+Bir Linux sunucuda (VPS — ör. Hetzner, DigitalOcean, Turhost, Natro; 2 GB RAM yeterli)
+tek komutla kurulum:
+
+```bash
+git clone <repo-url> && cd <repo>/okul-kayit-sistemi
+sudo bash deploy.sh
+```
+
+Betik sırasıyla: Docker'ı kurar → rastgele `OKUL_JWT_SECRET` ile `.env` oluşturur →
+uygulamayı derleyip başlatır → **tek seferlik admin şifresini** ekrana basar.
+Üretim kurulumu (`setup.js`) demo verisi içermez; boş sistemle başlar,
+kampüsler ve öğretim yılı hazır gelir, kullanıcıları siz eklersiniz.
+
+- Veritabanı `okul-data` Docker volume'ünde kalıcıdır; konteyner güncellemelerinde silinmez.
+- Güncelleme: `git pull && docker compose up -d --build`
+- Yedekleme: `docker run --rm -v okul-kayit-sistemi_okul-data:/data -v $(pwd):/backup alpine cp /data/okul.db /backup/yedek-$(date +%F).db`
+
+### Alan adı + HTTPS (önerilen)
+
+Sunucuya [Caddy](https://caddyserver.com) kurup şu `Caddyfile` ile otomatik SSL alın:
+
+```
+kayit.okulunuz.com {
+    reverse_proxy localhost:3000
+}
+```
+
+### PaaS ile (sunucusuz seçenek)
+
+Depo GitHub'da olduğu için [Railway](https://railway.app), [Render](https://render.com)
+veya [Fly.io](https://fly.io)'ya "GitHub'dan deploy" ile bağlanabilir; `Dockerfile`
+otomatik algılanır. Ortam değişkeni olarak `OKUL_JWT_SECRET` tanımlamanız ve verinin
+kalıcılığı için `/data` yoluna bir disk/volume eklemeniz yeterlidir.
 
 ### Demo giriş bilgileri (şifre: `123456`)
 | Kullanıcı | Rol | Kapsam |

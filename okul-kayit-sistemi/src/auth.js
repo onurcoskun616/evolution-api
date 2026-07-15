@@ -6,6 +6,10 @@ const jwt = require('jsonwebtoken');
 const { db } = require('./db');
 
 const JWT_SECRET = process.env.OKUL_JWT_SECRET || 'okul-kayit-sistemi-gizli-anahtar-degistirin';
+if (process.env.NODE_ENV === 'production' && !process.env.OKUL_JWT_SECRET) {
+  console.error('HATA: Üretim ortamında OKUL_JWT_SECRET ortam değişkeni zorunludur.');
+  process.exit(1);
+}
 const TOKEN_TTL = '12h';
 
 // Tüm izinlerin listesi

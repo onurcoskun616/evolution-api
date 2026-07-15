@@ -1,0 +1,18 @@
+services:
+  okul:
+    build: .
+    container_name: okul-kayit-sistemi
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      # Zorunlu: rastgele bir değerle doldurun (deploy.sh otomatik üretir)
+      OKUL_JWT_SECRET: ${OKUL_JWT_SECRET:?OKUL_JWT_SECRET tanımlanmalı}
+      # İsteğe bağlı: kampüsleri özelleştirin -> "KOD:Ad,KOD2:Ad 2"
+      OKUL_KAMPUSLER: ${OKUL_KAMPUSLER:-}
+    volumes:
+      - okul-data:/data
+
+volumes:
+  okul-data:
