@@ -21,6 +21,8 @@ services:
         generateValue: true   # Render güvenli rastgele değer üretir
       - key: OKUL_ADMIN_SIFRE
         generateValue: true   # admin şifresi: panelde Environment sekmesinden görünür
+      - key: OKUL_KAMPUSLER
+        value: "IKT:İkitelli OSB,IST:İstanbul OSB,ESN:Esenyurt,KRC:Kıraç,CRL:Çorlu"
     # Kalıcı veri için (starter plan gerektirir) yorumu kaldırın:
     # disk:
     #   name: okul-data
