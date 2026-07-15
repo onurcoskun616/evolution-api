@@ -4,6 +4,12 @@
  */
 const assert = require('assert');
 const http = require('http');
+const { execSync } = require('child_process');
+
+// Testler taze veri varsayar: sunucu yüklenmeden ÖNCE veritabanını yeniden oluştur
+console.log('Test öncesi veritabanı yeniden oluşturuluyor (npm run seed)…');
+execSync('node seed.js', { cwd: __dirname + '/..', stdio: 'ignore' });
+
 const app = require('../server');
 
 const PORT = 3999;
