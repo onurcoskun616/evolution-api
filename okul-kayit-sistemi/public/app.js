@@ -119,7 +119,8 @@ async function api(path, opts = {}) {
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
-  if (res.status === 401) {
+  // 401: giriş denemesinde gerçek hatayı göster; diğer isteklerde oturum düşmüştür
+  if (res.status === 401 && !path.startsWith('/auth/login')) {
     logout(false);
     throw new Error('Oturum sona erdi. Lütfen tekrar giriş yapın.');
   }
