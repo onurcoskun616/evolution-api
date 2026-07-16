@@ -1072,9 +1072,13 @@ async function pageNewEnrollment() {
             <td class="num"><input type="number" min="1" max="20" value="${i.qty}" data-item-qty="${idx}"
               style="width:64px; text-align:right" ${dis}></td>
             <td class="num">${i.checked && i.price ? fmtTL(gross) : '-'}</td>
-            <td class="num"><input type="number" min="0" max="100" step="0.01" placeholder="%"
+            <td class="num"><input type="number" min="0" max="100" step="0.01"
+              placeholder="${i.maxRate != null ? '≤%' + i.maxRate : '%'}"
+              title="${i.maxRate != null ? 'Bu kalem için azami indirim: %' + i.maxRate : ''}"
               value="${i.discRate || ''}" data-item-rate="${idx}" style="width:80px; text-align:right" ${dis}></td>
-            <td class="num"><input type="number" min="0" step="0.01" placeholder="TL"
+            <td class="num"><input type="number" min="0" step="0.01"
+              placeholder="${i.maxAmount != null ? '≤' + i.maxAmount : 'TL'}"
+              title="${i.maxAmount != null ? 'Bu kalem için azami indirim: ' + fmtTL(i.maxAmount) : ''}"
               value="${i.discRate ? disc.toFixed(2) : (i.discAmount || '')}" data-item-amount="${idx}"
               style="width:110px; text-align:right" ${dis} ${i.discRate ? 'readonly' : ''}></td>
             <td class="num"><b>${i.checked && i.price ? fmtTL(gross - disc) : '-'}</b></td>
@@ -1106,16 +1110,26 @@ async function pageNewEnrollment() {
     });
     $('#ne-items').querySelectorAll('[data-item-rate]').forEach(inp => inp.onchange = () => {
       const it = active[Number(inp.dataset.itemRate)];
-      const v = parseFloat(inp.value);
-      it.discRate = isNaN(v) || v <= 0 ? 0 : Math.min(100, v);
+      let v = parseFloat(inp.value);
+      v = isNaN(v) || v <= 0 ? 0 : Math.min(100, v);
+      if (it.maxRate != null && v > it.maxRate) {
+        toast(`"${it.name}" için azami indirim oranı %${it.maxRate} — değer buna indirildi.`, 'error');
+        v = it.maxRate;
+      }
+      it.discRate = v;
       if (it.discRate) it.discAmount = 0;
       renderItemsTable();
     });
     $('#ne-items').querySelectorAll('[data-item-amount]').forEach(inp => inp.onchange = () => {
       const it = active[Number(inp.dataset.itemAmount)];
       if (it.discRate) return; // oran girildiyse tutar otomatik
-      const v = parseFloat(inp.value);
-      it.discAmount = isNaN(v) || v <= 0 ? 0 : v;
+      let v = parseFloat(inp.value);
+      v = isNaN(v) || v <= 0 ? 0 : v;
+      if (it.maxAmount != null && v > it.maxAmount) {
+        toast(`"${it.name}" için azami indirim tutarı ${fmtTL(it.maxAmount)} — değer buna indirildi.`, 'error');
+        v = it.maxAmount;
+      }
+      it.discAmount = v;
       renderItemsTable();
     });
   }
@@ -1164,6 +1178,7 @@ async function pageNewEnrollment() {
         id: i.id, name: i.name, price: i.price, active: !!i.active,
         checked: idx === 0 && i.price !== null, // ilk kalem (genelde Eğitim Ücreti) hazır seçili
         qty: 1, discRate: 0, discAmount: 0,
+        maxRate: i.max_discount_rate, maxAmount: i.max_discount_amount,
       }));
       renderItemsTable();
       // Bölüm listesi
@@ -1572,11 +1587,13 @@ async function pageParameters() {
     if (!$('#pr-body')) return; // sayfa değişmiş
     const editable = can('settings.manage');
     $('#pr-body').innerHTML = `
-      <div class="section-title">İlan Edilen Liste Fiyatları</div>
+      <div class="section-title">İlan Edilen Liste Fiyatları ve Kalem Bazlı İndirim Sınırları</div>
       <p class="muted" style="font-size:12.5px; margin-bottom:10px">
-        Fiyatı boş bırakılan kalem bu kampüste kayıt sırasında seçilemez.</p>
+        Fiyatı boş bırakılan kalem kayıt sırasında seçilemez.
+        Azami indirim alanları boş bırakılırsa o kaleme sınır uygulanmaz (yalnız kampüs geneli sınır geçerli olur).</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Ücret Kalemi</th><th>Durum</th><th class="num" style="width:220px">İlan Edilen Ücret (TL)</th>
+        <thead><tr><th>Ücret Kalemi</th><th>Durum</th><th class="num" style="width:180px">İlan Edilen Ücret (TL)</th>
+        <th class="num" style="width:120px">Azami İnd. %</th><th class="num" style="width:150px">Azami İnd. TL</th>
         ${editable ? '<th></th>' : ''}</tr></thead>
         <tbody>${d.fee_items.map(i => `
           <tr style="${!i.active ? 'opacity:.55' : ''}">
@@ -1584,6 +1601,12 @@ async function pageParameters() {
             <td>${i.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}</td>
             <td class="num"><input type="number" step="0.01" min="0" data-price="${i.id}"
               value="${i.price ?? ''}" placeholder="İlan yok" ${!editable ? 'disabled' : ''}
+              style="text-align:right"></td>
+            <td class="num"><input type="number" step="0.01" min="0" max="100" data-maxrate="${i.id}"
+              value="${i.max_discount_rate ?? ''}" placeholder="Sınırsız" ${!editable ? 'disabled' : ''}
+              style="text-align:right"></td>
+            <td class="num"><input type="number" step="0.01" min="0" data-maxamount="${i.id}"
+              value="${i.max_discount_amount ?? ''}" placeholder="Sınırsız" ${!editable ? 'disabled' : ''}
               style="text-align:right"></td>
             ${editable ? `<td class="right"><button class="btn sm secondary" data-toggle="${i.id}" data-active="${i.active}">
               ${i.active ? 'Pasifleştir' : 'Aktifleştir'}</button></td>` : ''}
@@ -1637,10 +1660,17 @@ async function pageParameters() {
 
     if (!editable) return;
     $('#pr-save').onclick = async () => {
-      const prices = [...document.querySelectorAll('[data-price]')].map(inp => ({
-        fee_item_id: Number(inp.dataset.price),
-        price: inp.value === '' ? null : Number(inp.value),
-      }));
+      const prices = [...document.querySelectorAll('[data-price]')].map(inp => {
+        const id = inp.dataset.price;
+        const maxRate = document.querySelector(`[data-maxrate="${id}"]`);
+        const maxAmount = document.querySelector(`[data-maxamount="${id}"]`);
+        return {
+          fee_item_id: Number(id),
+          price: inp.value === '' ? null : Number(inp.value),
+          max_discount_rate: maxRate && maxRate.value !== '' ? Number(maxRate.value) : null,
+          max_discount_amount: maxAmount && maxAmount.value !== '' ? Number(maxAmount.value) : null,
+        };
+      });
       const section_plans = [...document.querySelectorAll('[data-plan]')].map(inp => {
         const [deptId, grade] = inp.dataset.plan.split('|');
         return { department_id: Number(deptId), grade, section_count: inp.value === '' ? 0 : Number(inp.value) };

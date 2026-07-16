@@ -16,9 +16,9 @@ const SECTION_LETTERS = 'ABCDEFGHIJ';
 function getParams(campusId, yearId) {
   const items = db.prepare('SELECT * FROM fee_items ORDER BY sort_order, id').all();
   const prices = db.prepare(
-    'SELECT fee_item_id, price FROM campus_prices WHERE campus_id = ? AND academic_year_id = ?'
+    'SELECT fee_item_id, price, max_discount_rate, max_discount_amount FROM campus_prices WHERE campus_id = ? AND academic_year_id = ?'
   ).all(campusId, yearId);
-  const priceMap = Object.fromEntries(prices.map(p => [p.fee_item_id, p.price]));
+  const priceMap = Object.fromEntries(prices.map(p => [p.fee_item_id, p]));
   const limits = db.prepare(
     'SELECT max_discount_rate, max_discount_amount FROM campus_discount_limits WHERE campus_id = ? AND academic_year_id = ?'
   ).get(campusId, yearId) || { max_discount_rate: null, max_discount_amount: null };
@@ -30,7 +30,12 @@ function getParams(campusId, yearId) {
   const section_plans = {};
   for (const p of planRows) section_plans[`${p.department_id}|${p.grade}`] = p.section_count;
   return {
-    fee_items: items.map(i => ({ ...i, price: priceMap[i.id] ?? null })),
+    fee_items: items.map(i => ({
+      ...i,
+      price: priceMap[i.id]?.price ?? null,
+      max_discount_rate: priceMap[i.id]?.max_discount_rate ?? null,
+      max_discount_amount: priceMap[i.id]?.max_discount_amount ?? null,
+    })),
     limits,
     departments,
     section_plans,
@@ -65,10 +70,20 @@ router.put('/', requirePermission('settings.manage'), (req, res) => {
     return res.status(404).json({ error: 'Öğretim yılı bulunamadı.' });
   }
   const prices = Array.isArray(b.prices) ? b.prices : [];
+  const normLimit = (v, max) => {
+    if (v === null || v === '' || v === undefined) return null;
+    const n = Number(v);
+    if (isNaN(n) || n < 0 || (max !== undefined && n > max)) return NaN;
+    return n;
+  };
   for (const p of prices) {
     if (p.price !== null && p.price !== '' && (isNaN(Number(p.price)) || Number(p.price) < 0)) {
       return res.status(400).json({ error: 'Fiyatlar 0 veya daha büyük olmalıdır.' });
     }
+    p._maxRate = normLimit(p.max_discount_rate, 100);
+    p._maxAmount = normLimit(p.max_discount_amount);
+    if (Number.isNaN(p._maxRate)) return res.status(400).json({ error: 'Kalem azami indirim oranı 0-100 arasında olmalıdır.' });
+    if (Number.isNaN(p._maxAmount)) return res.status(400).json({ error: 'Kalem azami indirim tutarı geçersiz.' });
   }
   const maxRate = b.max_discount_rate === null || b.max_discount_rate === '' || b.max_discount_rate === undefined
     ? null : Number(b.max_discount_rate);
@@ -95,16 +110,21 @@ router.put('/', requirePermission('settings.manage'), (req, res) => {
 
   db.transaction(() => {
     const up = db.prepare(`
-      INSERT INTO campus_prices (campus_id, academic_year_id, fee_item_id, price)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(campus_id, academic_year_id, fee_item_id) DO UPDATE SET price = excluded.price`);
+      INSERT INTO campus_prices (campus_id, academic_year_id, fee_item_id, price, max_discount_rate, max_discount_amount)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(campus_id, academic_year_id, fee_item_id) DO UPDATE
+        SET price = excluded.price,
+            max_discount_rate = excluded.max_discount_rate,
+            max_discount_amount = excluded.max_discount_amount`);
     const del = db.prepare(
       'DELETE FROM campus_prices WHERE campus_id = ? AND academic_year_id = ? AND fee_item_id = ?');
     for (const p of prices) {
       const itemId = Number(p.fee_item_id);
       if (!itemId) continue;
       if (p.price === null || p.price === '') del.run(campusId, yearId, itemId);
-      else up.run(campusId, yearId, itemId, money(p.price));
+      else up.run(campusId, yearId, itemId, money(p.price),
+        p._maxRate !== undefined ? p._maxRate : null,
+        p._maxAmount !== undefined ? (p._maxAmount === null ? null : money(p._maxAmount)) : null);
     }
     db.prepare(`
       INSERT INTO campus_discount_limits (campus_id, academic_year_id, max_discount_rate, max_discount_amount)

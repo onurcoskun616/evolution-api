@@ -115,7 +115,7 @@ function resolveItems(campusId, yearId, items) {
     throw new Error('En az bir ücret kalemi seçilmelidir. Kalemler Parametreler sayfasındaki ilan listesinden gelir.');
   }
   const priceRows = db.prepare(`
-    SELECT cp.fee_item_id, cp.price, fi.name, fi.active
+    SELECT cp.fee_item_id, cp.price, cp.max_discount_rate, cp.max_discount_amount, fi.name, fi.active
     FROM campus_prices cp JOIN fee_items fi ON fi.id = cp.fee_item_id
     WHERE cp.campus_id = ? AND cp.academic_year_id = ?`).all(campusId, yearId);
   const priceMap = new Map(priceRows.map(r => [r.fee_item_id, r]));
@@ -146,6 +146,13 @@ function resolveItems(campusId, yearId, items) {
       throw new Error(`"${row.name}" için indirim tutarı kalem tutarını aşamaz.`);
     }
     if (!dRate && dAmount) dRate = Math.round((dAmount / gross) * 10000) / 100;
+    // Kalem bazlı azami indirim sınırları (Parametreler sayfasında tanımlanır)
+    if (row.max_discount_rate !== null && dRate > row.max_discount_rate + 0.001) {
+      throw new Error(`"${row.name}" için izin verilen azami indirim oranı %${row.max_discount_rate}.`);
+    }
+    if (row.max_discount_amount !== null && dAmount > money(row.max_discount_amount) + 0.001) {
+      throw new Error(`"${row.name}" için izin verilen azami indirim tutarı ${Number(row.max_discount_amount).toLocaleString('tr-TR')} TL.`);
+    }
     const netTotal = money(gross - dAmount);
     resolved.push({
       fee_item_id: itemId, name: row.name, unit_price: money(row.price), quantity: qty,

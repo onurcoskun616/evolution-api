@@ -182,12 +182,15 @@ CREATE TABLE IF NOT EXISTS fee_items (
 );
 
 -- Kampüs + öğretim yılı bazında ilan edilen liste fiyatları
+-- max_discount_*: o kaleme uygulanabilecek azami indirim (NULL = kampüs geneli sınır geçerli)
 CREATE TABLE IF NOT EXISTS campus_prices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   campus_id INTEGER NOT NULL REFERENCES campuses(id),
   academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
   fee_item_id INTEGER NOT NULL REFERENCES fee_items(id),
   price REAL NOT NULL DEFAULT 0,
+  max_discount_rate REAL,
+  max_discount_amount REAL,
   UNIQUE(campus_id, academic_year_id, fee_item_id)
 );
 
@@ -245,6 +248,15 @@ if (!eiCols.includes('discount_rate')) {
     ALTER TABLE enrollment_items ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0;
     ALTER TABLE enrollment_items ADD COLUMN net_total REAL NOT NULL DEFAULT 0;
     UPDATE enrollment_items SET net_total = total;
+  `);
+}
+
+// Kalem bazlı indirim sınırı geçişi
+const cpCols = db.prepare('PRAGMA table_info(campus_prices)').all().map(c => c.name);
+if (!cpCols.includes('max_discount_rate')) {
+  db.exec(`
+    ALTER TABLE campus_prices ADD COLUMN max_discount_rate REAL;
+    ALTER TABLE campus_prices ADD COLUMN max_discount_amount REAL;
   `);
 }
 

@@ -336,6 +336,46 @@ async function main() {
     assert.equal(r.data.limits.max_discount_rate, 30);
   });
 
+  await test('Kalem bazlı indirim sınırı: kaleme özel azami oran/tutar uygulanır', async () => {
+    const yemek = pricedItems[2];
+    // Yemek ücretine kaleme özel sınır koy: azami %5 ve 3.000 TL
+    const upd = await req('PUT', '/parameters', {
+      token: hqToken,
+      body: {
+        campus_id: campusId, academic_year_id: activeYearId,
+        prices: [{ fee_item_id: yemek.id, price: yemek.price, max_discount_rate: 5, max_discount_amount: 3000 }],
+      },
+    });
+    assert.equal(upd.status, 200, JSON.stringify(upd.data));
+    const updated = upd.data.fee_items.find(i => i.id === yemek.id);
+    assert.equal(updated.max_discount_rate, 5);
+    assert.equal(updated.max_discount_amount, 3000);
+    // %10 indirim -> kalem sınırını aşar, reddedilir
+    const s = await req('POST', '/students', {
+      token: campusToken, body: { first_name: 'Kalem', last_name: 'Sınırı', campus_id: campusId },
+    });
+    const mk = disc => ({
+      student_id: s.data.id, academic_year_id: activeYearId, ...freePlacement,
+      items: [{ fee_item_id: yemek.id, quantity: 1, ...disc }],
+      installment_count: 3, first_due_date: '2026-09-15',
+    });
+    const rejRate = await req('POST', '/enrollments', { token: campusToken, body: mk({ discount_rate: 10 }) });
+    assert.equal(rejRate.status, 400);
+    assert.ok(/azami indirim oranı %5/.test(rejRate.data.error), rejRate.data.error);
+    // %4 ama tutarı 3.000 TL'yi aşan durum yok (yemek ~%4 = ~2.6k) -> kabul edilir
+    const ok = await req('POST', '/enrollments', { token: campusToken, body: mk({ discount_rate: 4 }) });
+    assert.equal(ok.status, 200, JSON.stringify(ok.data));
+    // Sınırı geri kaldır (sonraki testleri etkilemesin)
+    const reset = await req('PUT', '/parameters', {
+      token: hqToken,
+      body: {
+        campus_id: campusId, academic_year_id: activeYearId,
+        prices: [{ fee_item_id: yemek.id, price: yemek.price, max_discount_rate: null, max_discount_amount: null }],
+      },
+    });
+    assert.equal(reset.data.fee_items.find(i => i.id === yemek.id).max_discount_rate, null);
+  });
+
   await test('Yeni ücret kalemi eklenip fiyatlandırılabilir', async () => {
     const r = await req('POST', '/parameters/items', { token: hqToken, body: { name: 'Etüt Ücreti' } });
     assert.equal(r.status, 200, JSON.stringify(r.data));
