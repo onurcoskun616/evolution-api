@@ -504,7 +504,6 @@ async function pageStudentDetail(id) {
           <tr><td class="muted">Cinsiyet</td><td>${s.gender === 'ERKEK' ? 'Erkek' : s.gender === 'KIZ' ? 'Kız' : '-'}</td></tr>
           <tr><td class="muted">Bölüm</td><td>${esc(s.department_name || '-')}</td></tr>
           <tr><td class="muted">Sınıf / Şube</td><td>${esc(s.grade)}${s.section ? ' - ' + esc(s.section) : ''}</td></tr>
-          <tr><td class="muted">Kan Grubu</td><td>${esc(s.blood_type || '-')}</td></tr>
           <tr><td class="muted">Önceki Okul</td><td>${esc(s.previous_school || '-')}</td></tr>
           <tr><td class="muted">Adres</td><td>${esc(s.address || '-')} ${esc(s.district || '')} ${esc(s.city || '')}</td></tr>
           <tr><td class="muted">Sağlık Notları</td><td>${esc(s.health_notes || '-')}</td></tr>
@@ -526,6 +525,23 @@ async function pageStudentDetail(id) {
               ${esc(p.occupation || '')} ${p.workplace ? '· ' + esc(p.workplace) : ''} ${p.tc_no ? '· TC: ' + esc(p.tc_no) : ''}
             </div>
           </div>`).join('') || '<div class="empty">Veli kaydı yok</div>'}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>📎 Evrak Durumu
+        ${(() => { const m = d.documents.filter(x => !x.received).length;
+          return m ? `<span class="badge red">${m} eksik</span>` : '<span class="badge green">Tamam</span>'; })()}
+      </h3>
+      <div class="form-grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
+        ${d.documents.map(doc => `
+          <label style="display:flex; gap:8px; align-items:center; font-weight:400; text-transform:none; cursor:${can('student.edit') ? 'pointer' : 'default'}">
+            <input type="checkbox" style="width:auto" data-doc-toggle="${doc.id}"
+              ${doc.received ? 'checked' : ''} ${!can('student.edit') ? 'disabled' : ''}>
+            <span>${esc(doc.name)}
+              ${doc.received ? `<small class="muted" style="display:block">${fmtDate(doc.received_at)} · ${esc(doc.received_by_name || '')}</small>`
+                             : '<small style="display:block; color:var(--danger)">Eksik</small>'}</span>
+          </label>`).join('')}
       </div>
     </div>
 
@@ -612,6 +628,14 @@ async function pageStudentDetail(id) {
   const reload = () => pageStudentDetail(id);
 
   if ($('#btn-edit-student')) $('#btn-edit-student').onclick = () => studentFormModal(s, reload);
+  page.querySelectorAll('[data-doc-toggle]').forEach(cb => cb.onchange = async () => {
+    try {
+      await api(`/students/${s.id}/documents/${cb.dataset.docToggle}`, {
+        method: 'PUT', body: { received: cb.checked },
+      });
+      reload();
+    } catch (e) { toast(e.message, 'error'); cb.checked = !cb.checked; }
+  });
   if ($('#btn-add-parent')) $('#btn-add-parent').onclick = () => parentFormModal(s.id, null, reload);
   if ($('#btn-new-enrollment')) $('#btn-new-enrollment').onclick = () => { location.hash = `#/yeni-kayit/${s.id}`; };
 
@@ -653,7 +677,7 @@ async function pageStudentDetail(id) {
 }
 
 // ---- Öğrenci formu (yeni/düzenle) ----
-function studentFormFields(s = {}) {
+function studentFormFields(s = {}, opts = {}) {
   return `
     <div class="form-grid">
       <div class="field"><label>Adı *</label><input id="sf-first" value="${esc(s.first_name || '')}"></div>
@@ -665,37 +689,91 @@ function studentFormFields(s = {}) {
         <option value="">Seçiniz</option>
         <option value="KIZ" ${s.gender === 'KIZ' ? 'selected' : ''}>Kız</option>
         <option value="ERKEK" ${s.gender === 'ERKEK' ? 'selected' : ''}>Erkek</option></select></div>
-      <div class="field"><label>Kan Grubu</label><select id="sf-blood">
-        ${['', 'A Rh+', 'A Rh-', 'B Rh+', 'B Rh-', 'AB Rh+', 'AB Rh-', '0 Rh+', '0 Rh-'].map(b => `<option ${s.blood_type === b ? 'selected' : ''}>${b}</option>`).join('')}</select></div>
       ${isHQ() ? `<div class="field"><label>Kampüs *</label><select id="sf-campus">
         ${CAMPUSES.map(c => `<option value="${c.id}" ${s.campus_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>` : ''}
+      ${opts.noPlacement ? '' : `
       <div class="field"><label>Sınıf</label><select id="sf-grade">
         ${META.grades.map(g => `<option ${s.grade === g ? 'selected' : ''}>${g}</option>`).join('')}</select></div>
-      <div class="field"><label>Şube</label><input id="sf-section" value="${esc(s.section || '')}" maxlength="4"></div>
-      <div class="field"><label>Önceki Okul</label><input id="sf-prev" value="${esc(s.previous_school || '')}"></div>
+      <div class="field"><label>Şube</label><input id="sf-section" value="${esc(s.section || '')}" maxlength="4"></div>`}
       <div class="field"><label>Durum</label><select id="sf-status">
         ${META.student_statuses.map(x => `<option value="${x.value}" ${(s.status || 'AKTIF') === x.value ? 'selected' : ''}>${x.label}</option>`).join('')}</select></div>
       <div class="field"><label>İl</label><input id="sf-city" value="${esc(s.city || 'İstanbul')}"></div>
       <div class="field"><label>İlçe</label><input id="sf-district" value="${esc(s.district || '')}"></div>
       <div class="field full"><label>Adres</label><input id="sf-address" value="${esc(s.address || '')}"></div>
+      <div class="field"><label>Önceki Okul İli</label><select id="sf-psc-city"><option value="">Yükleniyor…</option></select></div>
+      <div class="field"><label>Önceki Okul İlçesi</label><select id="sf-psc-district" disabled><option value="">Önce il seçin</option></select></div>
+      <div class="field"><label>Önceki Okul</label><select id="sf-psc-school" disabled><option value="">Önce ilçe seçin</option></select></div>
+      <div class="field full" id="sf-prev-wrap" style="${s.previous_school && !s.previous_school_id ? '' : 'display:none'}">
+        <label>Önceki Okul (elle yazın)</label><input id="sf-prev" value="${esc(s.previous_school || '')}"></div>
       <div class="field full"><label>Sağlık Notları</label><input id="sf-health" value="${esc(s.health_notes || '')}"></div>
       <div class="field full"><label>Notlar</label><input id="sf-notes" value="${esc(s.notes || '')}"></div>
     </div>`;
 }
 
+/** Önceki okul il → ilçe → okul zincirini bağlar; kayıtlı seçimi geri yükler. */
+async function initSchoolPicker(s = {}) {
+  const citySel = $('#sf-psc-city');
+  if (!citySel) return;
+  const distSel = $('#sf-psc-district');
+  const schSel = $('#sf-psc-school');
+  const prevWrap = $('#sf-prev-wrap');
+  const fetchSchools = (city, district) => {
+    const qs = new URLSearchParams();
+    if (city) qs.set('city', city);
+    if (district) qs.set('district', district);
+    return api('/parameters/schools?' + qs);
+  };
+  const fillDistricts = async () => {
+    if (!citySel.value) {
+      distSel.innerHTML = '<option value="">Önce il seçin</option>'; distSel.disabled = true;
+      schSel.innerHTML = '<option value="">Önce ilçe seçin</option>'; schSel.disabled = true;
+      return;
+    }
+    const d = await fetchSchools(citySel.value);
+    distSel.innerHTML = '<option value="">Seçiniz</option>' +
+      d.districts.map(x => `<option>${esc(x)}</option>`).join('');
+    distSel.disabled = false;
+    schSel.innerHTML = '<option value="">Önce ilçe seçin</option>'; schSel.disabled = true;
+  };
+  const fillSchools = async () => {
+    if (!distSel.value) { schSel.innerHTML = '<option value="">Önce ilçe seçin</option>'; schSel.disabled = true; return; }
+    const d = await fetchSchools(citySel.value, distSel.value);
+    schSel.innerHTML = '<option value="">Seçiniz</option>' +
+      d.schools.map(x => `<option value="${x.id}">${esc(x.name)} (${x.type === 'LISE' ? 'Lise' : 'Ortaokul'})</option>`).join('') +
+      '<option value="__manual">Listede yok — elle yazacağım</option>';
+    schSel.disabled = false;
+  };
+  try {
+    const d0 = await fetchSchools();
+    if (!$('#sf-psc-city')) return;
+    citySel.innerHTML = '<option value="">Seçiniz</option>' +
+      d0.cities.map(x => `<option>${esc(x)}</option>`).join('') +
+      (d0.cities.length ? '' : '<option value="" disabled>(Katalog boş — Parametreler sayfasından yükleyin)</option>');
+    citySel.onchange = () => { fillDistricts(); prevWrap.style.display = 'none'; };
+    distSel.onchange = fillSchools;
+    schSel.onchange = () => { prevWrap.style.display = schSel.value === '__manual' ? '' : 'none'; };
+    if (s.previous_school_id && s.previous_school_city) {
+      citySel.value = s.previous_school_city;
+      await fillDistricts();
+      distSel.value = s.previous_school_district || '';
+      await fillSchools();
+      schSel.value = String(s.previous_school_id);
+    }
+  } catch (e) { /* katalog yüklenemedi - elle yazma alanı yeterli */ }
+}
+
 function readStudentForm() {
-  return {
+  const schoolSel = $('#sf-psc-school');
+  const schoolId = schoolSel && schoolSel.value && schoolSel.value !== '__manual' ? Number(schoolSel.value) : null;
+  const body = {
     first_name: $('#sf-first').value.trim(),
     last_name: $('#sf-last').value.trim(),
     tc_no: $('#sf-tc').value.trim(),
     birth_date: $('#sf-birth').value,
     birth_place: $('#sf-bplace').value,
     gender: $('#sf-gender').value,
-    blood_type: $('#sf-blood').value,
     campus_id: isHQ() ? Number($('#sf-campus').value) : USER.campus.id,
-    grade: $('#sf-grade').value,
-    section: $('#sf-section').value,
-    previous_school: $('#sf-prev').value,
+    previous_school_id: schoolId,
     status: $('#sf-status').value,
     city: $('#sf-city').value,
     district: $('#sf-district').value,
@@ -703,12 +781,16 @@ function readStudentForm() {
     health_notes: $('#sf-health').value,
     notes: $('#sf-notes').value,
   };
+  if (!schoolId) body.previous_school = $('#sf-prev') ? $('#sf-prev').value : '';
+  if ($('#sf-grade')) { body.grade = $('#sf-grade').value; body.section = $('#sf-section').value; }
+  return body;
 }
 
 function studentFormModal(s, onSaved) {
   openModal('Öğrenci Bilgilerini Düzenle', studentFormFields(s), {
     footHtml: `<button class="btn secondary" data-x>Vazgeç</button><button class="btn" id="sf-save">Kaydet</button>`,
     onOpen(area) {
+      initSchoolPicker(s);
       area.querySelector('[data-x]').onclick = closeModal;
       area.querySelector('#sf-save').onclick = async () => {
         try {
@@ -954,7 +1036,15 @@ async function pageNewEnrollment() {
         <div id="ne-selected" class="mt"></div>
       </div>
       <div id="student-new" style="display:none">
-        ${studentFormFields({})}
+        ${studentFormFields({}, { noPlacement: true })}
+        <div class="section-title">Sınıf Yerleşimi <span class="muted" style="font-weight:400; text-transform:none">· kayıt bilgilerine otomatik aktarılır</span></div>
+        <div class="form-grid">
+          <div class="field"><label>Kayıt Sınıfı *</label><select id="ne1-grade">
+            ${META.grades.map(g => `<option>${g}</option>`).join('')}</select></div>
+          <div class="field"><label>Bölüm *</label><select id="ne1-dept"><option value="">Kampüs seçin</option></select></div>
+          <div class="field"><label>Şube * <span class="muted" style="font-weight:400">(azami 30)</span></label>
+            <select id="ne1-section"><option value="">Önce bölüm seçin</option></select></div>
+        </div>
         <div class="section-title">Veli Bilgileri (Birincil)</div>
         <div class="form-grid">
           <div class="field"><label>Yakınlık *</label><select id="np-rel">
@@ -965,6 +1055,10 @@ async function pageNewEnrollment() {
           <div class="field"><label>E-posta</label><input id="np-email"></div>
           <div class="field"><label>TC Kimlik No</label><input id="np-tc" maxlength="11"></div>
           <div class="field"><label>Meslek</label><input id="np-occ"></div>
+        </div>
+        <div class="section-title">Evrak Listesi <span class="muted" style="font-weight:400; text-transform:none">· teslim alınanları işaretleyin, eksikler sonradan tamamlanabilir</span></div>
+        <div class="form-grid" id="sf-docs" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
+          <span class="muted">Yükleniyor…</span>
         </div>
       </div>
     </div>
@@ -999,8 +1093,13 @@ async function pageNewEnrollment() {
         <div class="field"><label>İlk Taksit Tarihi</label><input type="date" id="ne-first-due"></div>
         <div class="field"><label>Varsayılan Ödeme Türü</label><select id="ne-method">
           ${META.payment_methods.map(m => `<option value="${m.value}">${m.label}</option>`).join('')}</select></div>
-        <div class="field"><label>Ödeme Sorumlusu (Veli)</label><input id="ne-payer"></div>
+        <div class="field"><label>Ödeme Sorumlusu (Veli)</label>
+          <div class="flex" style="gap:6px; flex-wrap:nowrap">
+            <input id="ne-payer" style="flex:1">
+            <button class="btn sm secondary" id="ne-payer-pick" type="button" title="Birincil veli bilgilerinden doldur">👤 Veliden Al</button>
+          </div></div>
         <div class="field"><label>Ödeme Sorumlusu Telefon</label><input id="ne-payer-phone"></div>
+        <div class="field"><label>Ödeme Sorumlusu TC</label><input id="ne-payer-tc" maxlength="11"></div>
         <div class="field full"><label>Notlar</label><input id="ne-notes"></div>
       </div>
       <div class="flex mt">
@@ -1153,11 +1252,16 @@ async function pageNewEnrollment() {
         sel.innerHTML = '<option value="">⚠ Şube planı tanımlanmamış (Parametreler)</option>';
         return;
       }
-      sel.innerHTML = d.sections.map(x =>
+      const optionsHtml = d.sections.map(x =>
         `<option value="${x.section}" ${x.full ? 'disabled' : ''}>${x.section} şubesi (${x.current}/${x.capacity})${x.full ? ' - DOLU' : ''}</option>`
       ).join('') || '<option value="">Şube yok</option>';
       const firstOpen = d.sections.find(x => !x.full);
-      if (firstOpen) sel.value = firstOpen.section;
+      for (const id of ['#ne-section', '#ne1-section']) {
+        const el = $(id);
+        if (!el) continue;
+        el.innerHTML = optionsHtml;
+        if (firstOpen) el.value = firstOpen.section;
+      }
     } catch (e) { toast(e.message, 'error'); }
   }
 
@@ -1183,17 +1287,21 @@ async function pageNewEnrollment() {
       }));
       renderItemsTable();
       // Bölüm listesi
-      const deptSel = $('#ne-dept');
-      const prev = deptSel.value;
       const active = (d.departments || []).filter(x => x.active);
-      deptSel.innerHTML = active.length
+      const deptHtml = active.length
         ? active.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')
         : '<option value="">⚠ Bölüm tanımlanmamış (Parametreler)</option>';
-      if (prev && active.some(x => String(x.id) === prev)) deptSel.value = prev;
+      for (const id of ['#ne-dept', '#ne1-dept']) {
+        const el = $(id);
+        if (!el) continue;
+        const prev = el.value;
+        el.innerHTML = deptHtml;
+        if (prev && active.some(x => String(x.id) === prev)) el.value = prev;
+      }
       // Öğrencinin mevcut bölümü varsa seç
       if (mode === 'existing' && selectedStudent?.department_id &&
           active.some(x => x.id === selectedStudent.department_id)) {
-        deptSel.value = String(selectedStudent.department_id);
+        $('#ne-dept').value = String(selectedStudent.department_id);
       }
       await loadSections();
     } catch (e) { toast(e.message, 'error'); }
@@ -1208,6 +1316,17 @@ async function pageNewEnrollment() {
       </div>` : '';
     if (selectedStudent) {
       $('#ne-grade').value = META.grades.includes(selectedStudent.grade) ? selectedStudent.grade : META.grades[0];
+      // Ödeme sorumlusu boşsa birincil veliden doldur
+      if (!$('#ne-payer').value.trim()) {
+        api('/students/' + selectedStudent.id).then(d => {
+          const p = d.parents.find(x => x.is_primary) || d.parents[0];
+          if (p && $('#ne-payer') && !$('#ne-payer').value.trim()) {
+            $('#ne-payer').value = p.full_name;
+            $('#ne-payer-phone').value = p.phone || '';
+            $('#ne-payer-tc').value = p.tc_no || '';
+          }
+        }).catch(() => {});
+      }
     }
     loadItems();
   }
@@ -1261,10 +1380,68 @@ async function pageNewEnrollment() {
     }));
 
   $('#ne-year').onchange = loadItems;
-  $('#ne-dept').onchange = loadSections;
-  $('#ne-grade').onchange = loadSections;
+  // 1. bölümdeki yerleşim ile 3. bölümdeki kayıt alanları birbirine bağlı çalışır
+  const syncPlacement = from => {
+    const map = [['#ne1-grade', '#ne-grade'], ['#ne1-dept', '#ne-dept'], ['#ne1-section', '#ne-section']];
+    for (const [a, b] of map) {
+      const src2 = from === 'step1' ? $(a) : $(b);
+      const dst = from === 'step1' ? $(b) : $(a);
+      if (src2 && dst) dst.value = src2.value;
+    }
+  };
+  $('#ne-dept').onchange = () => { syncPlacement('step3'); loadSections(); };
+  $('#ne-grade').onchange = () => { syncPlacement('step3'); loadSections(); };
+  $('#ne-section').onchange = () => syncPlacement('step3');
+  for (const [id, mirror] of [['#ne1-grade', true], ['#ne1-dept', true], ['#ne1-section', false]]) {
+    const el = $(id);
+    if (el) el.onchange = () => { syncPlacement('step1'); if (mirror) loadSections(); };
+  }
   const sfCampusSel = $('#sf-campus');
   if (sfCampusSel) sfCampusSel.onchange = loadItems;
+
+  // Evrak listesi + önceki okul zinciri (yeni öğrenci sekmesi)
+  (async () => {
+    try {
+      const d = await api('/parameters/documents');
+      const wrap = $('#sf-docs');
+      if (!wrap) return;
+      wrap.innerHTML = d.document_types.filter(x => x.active).map(x => `
+        <label style="display:flex; gap:8px; align-items:center; font-weight:400; text-transform:none">
+          <input type="checkbox" style="width:auto" data-doc="${x.id}"> ${esc(x.name)}</label>`).join('');
+    } catch {}
+  })();
+  initSchoolPicker({});
+
+  // Ödeme sorumlusu: veliden al
+  $('#ne-payer-pick').onclick = async () => {
+    if (mode === 'new') {
+      const name = $('#np-name').value.trim();
+      if (!name) return toast('Önce 1. bölümde veli adını girin.', 'error');
+      $('#ne-payer').value = name;
+      $('#ne-payer-phone').value = $('#np-phone').value;
+      $('#ne-payer-tc').value = $('#np-tc').value;
+      toast('Ödeme sorumlusu veli bilgilerinden dolduruldu.', 'success');
+    } else {
+      if (!selectedStudent) return toast('Önce bir öğrenci seçin.', 'error');
+      try {
+        const d = await api('/students/' + selectedStudent.id);
+        const p = d.parents.find(x => x.is_primary) || d.parents[0];
+        if (!p) return toast('Bu öğrencinin veli kaydı yok.', 'error');
+        $('#ne-payer').value = p.full_name;
+        $('#ne-payer-phone').value = p.phone || '';
+        $('#ne-payer-tc').value = p.tc_no || '';
+        toast(`Ödeme sorumlusu: ${p.full_name} (${p.relation === 'ANNE' ? 'Anne' : p.relation === 'BABA' ? 'Baba' : 'Veli'})`, 'success');
+      } catch (e) { toast(e.message, 'error'); }
+    }
+  };
+  // Yeni öğrenci modunda veli adı yazılınca ödeme sorumlusu boşsa otomatik doldur
+  $('#np-name').onblur = () => {
+    if (mode === 'new' && !$('#ne-payer').value.trim() && $('#np-name').value.trim()) {
+      $('#ne-payer').value = $('#np-name').value.trim();
+      $('#ne-payer-phone').value = $('#np-phone').value;
+      $('#ne-payer-tc').value = $('#np-tc').value;
+    }
+  };
 
   $('#ne-preview').onclick = async () => {
     try {
@@ -1283,6 +1460,8 @@ async function pageNewEnrollment() {
   // ---- Kaydet ----
   $('#ne-save').onclick = async () => {
     try {
+      // Kayıt türünü baştan yakala: yeni öğrenci oluşturulunca mod değişse de tür korunur
+      const enrollmentType = $('#ne-type').value;
       let studentId;
       if (mode === 'existing') {
         if (!selectedStudent) throw new Error('Lütfen bir öğrenci seçin veya "Yeni Öğrenci" sekmesinden oluşturun.');
@@ -1294,8 +1473,16 @@ async function pageNewEnrollment() {
           phone: $('#np-phone').value, email: $('#np-email').value,
           tc_no: $('#np-tc').value, occupation: $('#np-occ').value, is_primary: true,
         }];
+        body.documents = [...document.querySelectorAll('#sf-docs [data-doc]:checked')]
+          .map(cb => Number(cb.dataset.doc));
         if (!body.parents[0].full_name || !body.parents[0].phone) {
           throw new Error('Yeni öğrenci için veli adı ve telefonu zorunludur.');
+        }
+        // Ödeme sorumlusu boşsa birincil veliden doldur
+        if (!$('#ne-payer').value.trim()) {
+          $('#ne-payer').value = body.parents[0].full_name;
+          $('#ne-payer-phone').value = body.parents[0].phone;
+          $('#ne-payer-tc').value = body.parents[0].tc_no || '';
         }
         const created = await api('/students', { method: 'POST', body });
         studentId = created.id;
@@ -1318,7 +1505,7 @@ async function pageNewEnrollment() {
         body: {
           student_id: studentId,
           academic_year_id: Number($('#ne-year').value),
-          enrollment_type: $('#ne-type').value,
+          enrollment_type: enrollmentType,
           enrollment_date: $('#ne-date').value,
           grade: $('#ne-grade').value,
           department_id: Number($('#ne-dept').value) || null,
@@ -1329,6 +1516,7 @@ async function pageNewEnrollment() {
           default_payment_method: $('#ne-method').value,
           payer_name: $('#ne-payer').value,
           payer_phone: $('#ne-payer-phone').value,
+          payer_tc: $('#ne-payer-tc').value,
           notes: $('#ne-notes').value,
         },
       });
@@ -1646,6 +1834,43 @@ async function pageParameters() {
         <button class="btn sm secondary" id="pr-add-dept">+ Bölüm Ekle</button>
       </div>` : ''}
 
+      <div class="section-title mt">Kayıt Evrak Listesi</div>
+      <p class="muted" style="font-size:12.5px; margin-bottom:10px">
+        Öğrenci kaydında istenen evraklar. Eksik evraklar öğrenci kartından işaretlenir ve
+        "Eksik Evraklar" raporundan takip edilir.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Evrak</th><th>Durum</th>${editable ? '<th></th>' : ''}</tr></thead>
+        <tbody id="pr-docs-body"><tr><td class="muted">Yükleniyor…</td></tr></tbody>
+      </table></div>
+      ${editable ? `
+      <div class="flex mt">
+        <input id="pr-new-doc" placeholder="Yeni evrak adı (örn: Aşı Kartı)" style="max-width:280px">
+        <button class="btn sm secondary" id="pr-add-doc">+ Evrak Ekle</button>
+      </div>` : ''}
+
+      <div class="section-title mt">Önceki Okul Kataloğu</div>
+      <p class="muted" style="font-size:12.5px; margin-bottom:10px">
+        Öğrenci formundaki "Önceki Okul" seçimi bu katalogdan gelir (il → ilçe → okul).
+        Excel sütunları: <b>A: İl, B: İlçe, C: Okul Adı, D: Tür (Ortaokul/Lise)</b> — ilk satır başlık olabilir, mevcut okullar atlanır.</p>
+      ${editable ? `
+      <div class="toolbar">
+        <div class="field"><label>Excel'den Yükle (.xlsx)</label><input type="file" id="pr-school-file" accept=".xlsx"></div>
+        <button class="btn sm" id="pr-school-import">⬆️ Yükle</button>
+        <span class="spacer"></span>
+      </div>
+      <div class="toolbar">
+        <div class="field"><label>İl</label><input id="pr-sch-city" placeholder="İstanbul" style="max-width:140px"></div>
+        <div class="field"><label>İlçe</label><input id="pr-sch-district" placeholder="Esenyurt" style="max-width:140px"></div>
+        <div class="field grow"><label>Okul Adı</label><input id="pr-sch-name" placeholder="... Ortaokulu"></div>
+        <div class="field"><label>Tür</label><select id="pr-sch-type" style="max-width:130px">
+          <option value="ORTAOKUL">Ortaokul</option><option value="LISE">Lise</option></select></div>
+        <button class="btn sm secondary" id="pr-add-school">+ Okul Ekle</button>
+      </div>` : ''}
+      <div class="toolbar">
+        <div class="field grow"><label>Katalogda ara</label><input id="pr-sch-search" placeholder="Okul adı yazın…"></div>
+      </div>
+      <div id="pr-schools-table"><div class="muted" style="padding:8px">Aramak için yazın veya tümünü görmek için boş bırakın.</div></div>
+
       <div class="section-title mt">Kampüs İndirim Sınırları</div>
       <p class="muted" style="font-size:12.5px; margin-bottom:10px">
         Kayıt sırasında bu sınırların üzerinde indirim yapılamaz. Boş bırakılan sınır uygulanmaz.</p>
@@ -1723,12 +1948,120 @@ async function pageParameters() {
         load();
       } catch (e) { toast(e.message, 'error'); }
     });
+    $('#pr-add-doc').onclick = async () => {
+      const name = $('#pr-new-doc').value.trim();
+      if (!name) return toast('Evrak adı yazın.', 'error');
+      try {
+        await api('/parameters/documents', { method: 'POST', body: { name } });
+        toast('Evrak türü eklendi.', 'success'); loadDocs();
+        $('#pr-new-doc').value = '';
+      } catch (e) { toast(e.message, 'error'); }
+    };
+    $('#pr-school-import').onclick = async () => {
+      const file = $('#pr-school-file').files[0];
+      if (!file) return toast('Önce bir .xlsx dosyası seçin.', 'error');
+      try {
+        const buf = await file.arrayBuffer();
+        const res = await fetch('/api/parameters/schools/import', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/octet-stream' },
+          body: buf,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Yükleme başarısız.');
+        toast(`Okul yükleme tamam: ${data.added} eklendi, ${data.skipped} zaten vardı, ${data.invalid} satır atlandı.`, 'success');
+        loadSchools();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+    $('#pr-add-school').onclick = async () => {
+      try {
+        await api('/parameters/schools', {
+          method: 'POST',
+          body: {
+            city: $('#pr-sch-city').value, district: $('#pr-sch-district').value,
+            name: $('#pr-sch-name').value, type: $('#pr-sch-type').value,
+          },
+        });
+        toast('Okul eklendi.', 'success'); $('#pr-sch-name').value = ''; loadSchools();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+  }
+
+  // ---- Evrak türleri listesi ----
+  async function loadDocs() {
+    try {
+      const d = await api('/parameters/documents');
+      const body = $('#pr-docs-body');
+      if (!body) return;
+      const editable = can('settings.manage');
+      body.innerHTML = d.document_types.map(x => `
+        <tr style="${!x.active ? 'opacity:.55' : ''}">
+          <td><b>${esc(x.name)}</b></td>
+          <td>${x.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}</td>
+          ${editable ? `<td class="right"><button class="btn sm secondary" data-doc-tgl="${x.id}" data-active="${x.active}">
+            ${x.active ? 'Pasifleştir' : 'Aktifleştir'}</button></td>` : ''}
+        </tr>`).join('');
+      body.querySelectorAll('[data-doc-tgl]').forEach(b => b.onclick = async () => {
+        try {
+          await api('/parameters/documents/' + b.dataset.docTgl, {
+            method: 'PUT', body: { active: b.dataset.active !== '1' },
+          });
+          loadDocs();
+        } catch (e) { toast(e.message, 'error'); }
+      });
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ---- Okul kataloğu listesi ----
+  async function loadSchools() {
+    const wrap = $('#pr-schools-table');
+    if (!wrap) return;
+    try {
+      const qs = new URLSearchParams({ include_passive: 1 });
+      const search = $('#pr-sch-search')?.value.trim();
+      if (search) qs.set('search', search);
+      const d = await api('/parameters/schools?' + qs);
+      const editable = can('settings.manage');
+      wrap.innerHTML = `
+        <p class="muted" style="font-size:12px; margin-bottom:6px">Katalogda ${d.schools.length >= 500 ? '500+' : d.schools.length} okul gösteriliyor · ${d.cities.length} il</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>İl</th><th>İlçe</th><th>Okul</th><th>Tür</th><th>Durum</th>${editable ? '<th></th>' : ''}</tr></thead>
+          <tbody>${d.schools.slice(0, 100).map(x => `
+            <tr style="${!x.active ? 'opacity:.55' : ''}">
+              <td>${esc(x.city)}</td><td>${esc(x.district)}</td><td><b>${esc(x.name)}</b></td>
+              <td>${x.type === 'LISE' ? 'Lise' : 'Ortaokul'}</td>
+              <td>${x.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}</td>
+              ${editable ? `<td class="right"><button class="btn sm secondary" data-sch-tgl="${x.id}" data-active="${x.active}">
+                ${x.active ? 'Pasifleştir' : 'Aktifleştir'}</button></td>` : ''}
+            </tr>`).join('') || '<tr><td colspan="6" class="empty">Katalog boş — Excel ile yükleyin veya elle ekleyin</td></tr>'}
+          </tbody></table></div>`;
+      wrap.querySelectorAll('[data-sch-tgl]').forEach(b => b.onclick = async () => {
+        try {
+          await api('/parameters/schools/' + b.dataset.schTgl, {
+            method: 'PUT', body: { active: b.dataset.active !== '1' },
+          });
+          loadSchools();
+        } catch (e) { toast(e.message, 'error'); }
+      });
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  if (!window.__schSearchBound) {
+    window.__schSearchBound = true;
+    let schDebounce;
+    document.addEventListener('input', e => {
+      if (e.target && e.target.id === 'pr-sch-search') {
+        clearTimeout(schDebounce);
+        schDebounce = setTimeout(loadSchools, 350);
+      }
+    });
   }
 
   ['pr-campus', 'pr-year'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.onchange = load;
   });
+  const origLoad = load;
+  load = async function () { await origLoad(); loadDocs(); loadSchools(); };
   const backupBtn = $('#pr-backup');
   if (backupBtn) backupBtn.onclick = async () => {
     backupBtn.disabled = true;

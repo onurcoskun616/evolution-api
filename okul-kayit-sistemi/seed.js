@@ -130,6 +130,32 @@ for (const c of campusIds) {
   }
 }
 
+// ---- Önceki okul kataloğu (örnek) ----
+const SCHOOL_SEED = [
+  ['İstanbul', 'Esenyurt', 'Esenyurt Atatürk Ortaokulu', 'ORTAOKUL'],
+  ['İstanbul', 'Esenyurt', 'Cumhuriyet Ortaokulu', 'ORTAOKUL'],
+  ['İstanbul', 'Esenyurt', 'Yunus Emre Ortaokulu', 'ORTAOKUL'],
+  ['İstanbul', 'Başakşehir', 'Başakşehir Ortaokulu', 'ORTAOKUL'],
+  ['İstanbul', 'Başakşehir', 'Şahintepe Ortaokulu', 'ORTAOKUL'],
+  ['İstanbul', 'Başakşehir', 'İkitelli İMKB Ortaokulu', 'ORTAOKUL'],
+  ['İstanbul', 'Avcılar', 'Avcılar Fatih Ortaokulu', 'ORTAOKUL'],
+  ['İstanbul', 'Küçükçekmece', 'Halkalı Ortaokulu', 'ORTAOKUL'],
+  ['İstanbul', 'Küçükçekmece', 'Sefaköy Anadolu Lisesi', 'LISE'],
+  ['İstanbul', 'Bağcılar', 'Bağcılar Ortaokulu', 'ORTAOKUL'],
+  ['Tekirdağ', 'Çorlu', 'Çorlu Atatürk Ortaokulu', 'ORTAOKUL'],
+  ['Tekirdağ', 'Çorlu', 'Çorlu Cumhuriyet Ortaokulu', 'ORTAOKUL'],
+  ['Tekirdağ', 'Çorlu', 'Çorlu Mehmet Akif Ersoy Ortaokulu', 'ORTAOKUL'],
+  ['Tekirdağ', 'Çerkezköy', 'Çerkezköy Ortaokulu', 'ORTAOKUL'],
+  ['Tekirdağ', 'Süleymanpaşa', 'Namık Kemal Ortaokulu', 'ORTAOKUL'],
+];
+const insSchool = db.prepare('INSERT INTO schools (city, district, name, type) VALUES (?, ?, ?, ?)');
+const schoolIds = SCHOOL_SEED.map(s => Number(insSchool.run(...s).lastInsertRowid));
+
+// Evrak türleri (db.js açılışta ekledi)
+const docTypeIds = db.prepare('SELECT id FROM document_types ORDER BY sort_order').all().map(r => r.id);
+const insStudentDoc = db.prepare(
+  'INSERT OR IGNORE INTO student_documents (student_id, document_type_id, received_by) VALUES (?, ?, ?)');
+
 // ---- MEB ilan listeleri (kampüs + yıl bazında liste fiyatları ve indirim sınırları) ----
 const feeItems = db.prepare('SELECT id, name FROM fee_items ORDER BY sort_order, id').all();
 const BASE_PRICES = {
@@ -309,6 +335,18 @@ const seedAll = db.transaction(() => {
         pick(OCCUPATIONS), '', '', primaryIsMother ? 0 : 1);
       const payerName = primaryIsMother ? motherName : fatherName;
       const payerPhone = primaryIsMother ? motherPhone : fatherPhone;
+
+      // Evrak teslimleri: her evrak ~%85 olasılıkla teslim edilmiş
+      for (const dtId of docTypeIds) {
+        if (rnd() < 0.85) insStudentDoc.run(sid, dtId, userIds[1]);
+      }
+      // 9. sınıf (dış kayıt) öğrencilerine önceki okul ata
+      if (category === 'current' && gradeNum === 9) {
+        const sch = schoolIds[rint(0, schoolIds.length - 1)];
+        const schRow = SCHOOL_SEED[schoolIds.indexOf(sch)];
+        db.prepare('UPDATE students SET previous_school_id = ?, previous_school = ? WHERE id = ?')
+          .run(sch, `${schRow[2]} (${schRow[1]}/${schRow[0]})`, sid);
+      }
 
       // Geçmiş yıl ödeme davranışı: %78 tam, %15 gecikmeli, %7 sorunlu
       const behavior = rnd() < 0.78 ? 0 : rnd() < 0.68 ? 1 : 2;

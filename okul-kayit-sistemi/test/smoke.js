@@ -684,6 +684,102 @@ async function main() {
     assert.ok(buf.length > 10000);
   });
 
+  await test('Evrak takibi: kayıtta işaretleme, sonradan tamamlama', async () => {
+    const docs = await req('GET', '/parameters/documents', { token: campusToken });
+    assert.equal(docs.status, 200);
+    const types = docs.data.document_types.filter(x => x.active);
+    assert.ok(types.length >= 7, 'varsayılan 7 evrak türü olmalı');
+    // İlk 3 evrak teslim alınmış olarak öğrenci oluştur
+    const s = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: 'Evrak', last_name: 'Testi', campus_id: campusId,
+        documents: types.slice(0, 3).map(t => t.id),
+      },
+    });
+    assert.equal(s.status, 200, JSON.stringify(s.data));
+    let d = await req('GET', '/students/' + s.data.id, { token: campusToken });
+    assert.equal(d.data.documents.filter(x => x.received).length, 3);
+    assert.equal(d.data.documents.filter(x => !x.received).length, types.length - 3);
+    // Veli sonradan bir evrak getirdi
+    const missing = d.data.documents.find(x => !x.received);
+    const r = await req('PUT', `/students/${s.data.id}/documents/${missing.id}`, {
+      token: campusToken, body: { received: true },
+    });
+    assert.equal(r.status, 200);
+    d = await req('GET', '/students/' + s.data.id, { token: campusToken });
+    assert.equal(d.data.documents.filter(x => x.received).length, 4);
+    // Yanlış işaretleme geri alınabilir
+    await req('PUT', `/students/${s.data.id}/documents/${missing.id}`, {
+      token: campusToken, body: { received: false },
+    });
+    d = await req('GET', '/students/' + s.data.id, { token: campusToken });
+    assert.equal(d.data.documents.filter(x => x.received).length, 3);
+  });
+
+  await test('Eksik evrak raporu: öğrenci ve evrak bazında', async () => {
+    const r = await req('GET', '/reports/eksik-evraklar/preview', { token: campusToken });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.ok(r.data.total_rows > 500, `eksik evraklı öğrenci: ${r.data.total_rows}`);
+    assert.ok(r.data.columns.some(c => /Fotoğraf/i.test(c.header)), 'evrak sütunları olmalı');
+    const row = r.data.rows[0];
+    assert.ok(row.missing_count >= 1);
+    const xls = await req('GET', '/reports/eksik-evraklar/excel', { token: campusToken, raw: true });
+    assert.equal(xls.status, 200);
+  });
+
+  await test('Okul kataloğu: ekleme, filtreleme ve öğrenciye bağlama', async () => {
+    const add = await req('POST', '/parameters/schools', {
+      token: hqToken,
+      body: { city: 'İstanbul', district: 'Test İlçe', name: 'Test Ortaokulu', type: 'ORTAOKUL' },
+    });
+    assert.equal(add.status, 200, JSON.stringify(add.data));
+    const list = await req('GET', '/parameters/schools?city=' + encodeURIComponent('İstanbul'), { token: campusToken });
+    assert.ok(list.data.cities.includes('İstanbul'));
+    assert.ok(list.data.districts.includes('Test İlçe'));
+    assert.ok(list.data.schools.some(x => x.name === 'Test Ortaokulu'));
+    // Öğrenciye önceki okul bağla
+    const s = await req('POST', '/students', {
+      token: campusToken,
+      body: { first_name: 'Okul', last_name: 'Bağlama', campus_id: campusId, previous_school_id: add.data.id },
+    });
+    assert.equal(s.status, 200, JSON.stringify(s.data));
+    const d = await req('GET', '/students/' + s.data.id, { token: campusToken });
+    assert.equal(d.data.student.previous_school_name, 'Test Ortaokulu');
+    assert.ok(d.data.student.previous_school.includes('Test Ortaokulu'));
+    // Kampüs müdürü okul ekleyemez
+    const denied = await req('POST', '/parameters/schools', {
+      token: campusToken, body: { city: 'X', district: 'Y', name: 'Z' },
+    });
+    assert.equal(denied.status, 403);
+  });
+
+  await test('Okul kataloğu: Excel ile toplu yükleme', async () => {
+    const ExcelJS = require('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Okullar');
+    ws.addRow(['İl', 'İlçe', 'Okul Adı', 'Tür']); // başlık
+    ws.addRow(['Kocaeli', 'Gebze', 'Gebze Ortaokulu', 'Ortaokul']);
+    ws.addRow(['Kocaeli', 'Gebze', 'Gebze Anadolu Lisesi', 'Lise']);
+    ws.addRow(['Kocaeli', 'İzmit', 'İzmit Cumhuriyet Ortaokulu', '']);
+    ws.addRow(['', '', 'Eksik Satır', '']); // geçersiz
+    ws.addRow(['Kocaeli', 'Gebze', 'Gebze Ortaokulu', 'Ortaokul']); // mükerrer
+    const buf = await wb.xlsx.writeBuffer();
+    const res = await fetch(BASE + '/api/parameters/schools/import', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + hqToken, 'Content-Type': 'application/octet-stream' },
+      body: buf,
+    });
+    const data = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(data));
+    assert.equal(data.added, 3, `eklendi: ${data.added}`);
+    assert.equal(data.skipped, 1);
+    assert.equal(data.invalid, 1);
+    const list = await req('GET', '/parameters/schools?city=Kocaeli', { token: campusToken });
+    assert.equal(list.data.schools.length, 3);
+    assert.equal(list.data.schools.find(x => x.name === 'Gebze Anadolu Lisesi').type, 'LISE');
+  });
+
   await test('Denetim kaydı tutulur', async () => {
     const r = await req('GET', '/audit', { token: hqToken });
     assert.equal(r.status, 200);

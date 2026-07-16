@@ -19,6 +19,7 @@ const REPORT_DEFS = [
   { key: 'geciken-taksitler', name: 'Vadesi Geçen Taksitler', desc: 'Gecikmiş taksitler; veli iletişim bilgileriyle.' },
   { key: 'yaklasan-taksitler', name: 'Yaklaşan Taksitler', desc: 'Önümüzdeki 30 gün içinde vadesi gelecek taksitler.' },
   { key: 'kayit-yenilemeyenler', name: 'Kayıt Yenilemeyenler', desc: 'Geçen öğretim yılında kayıtlı olup seçilen yıla kayıt yaptırmayan öğrenciler.' },
+  { key: 'eksik-evraklar', name: 'Eksik Evraklar', desc: 'Kayıt evrakları eksik olan öğrenciler; evrak türü bazında VAR/EKSİK durumuyla.' },
   { key: 'kampus-ozet', name: 'Kampüs Özet Raporu', desc: 'Kampüs bazında öğrenci, ciro, tahsilat ve gecikme özeti.' },
   { key: 'odeme-turu', name: 'Ödeme Türü Dağılımı', desc: 'Ödeme yöntemlerine göre tahsilat dağılımı.' },
 ];
@@ -250,6 +251,54 @@ function buildWorkbookRows(type, req) {
         ],
         rows: rows.map(r => ({ ...r, prev_balance: money(r.prev_net - r.prev_paid) })),
         sumColumn: 'prev_balance',
+      };
+    }
+    case 'eksik-evraklar': {
+      const docTypes = db.prepare(
+        'SELECT id, name FROM document_types WHERE active = 1 ORDER BY sort_order, id').all();
+      const students = db.prepare(`
+        SELECT s.id, s.student_no, s.first_name || ' ' || s.last_name AS student,
+          c.name AS campus, dp.name AS department, s.grade, s.section,
+          (SELECT p.full_name FROM parents p WHERE p.student_id = s.id ORDER BY p.is_primary DESC, p.id LIMIT 1) AS parent_name,
+          (SELECT p.phone FROM parents p WHERE p.student_id = s.id ORDER BY p.is_primary DESC, p.id LIMIT 1) AS parent_phone
+        FROM students s
+        JOIN campuses c ON c.id = s.campus_id
+        LEFT JOIN departments dp ON dp.id = s.department_id
+        WHERE s.status = 'AKTIF'
+          AND (SELECT COUNT(*) FROM student_documents sd
+               JOIN document_types dt ON dt.id = sd.document_type_id AND dt.active = 1
+               WHERE sd.student_id = s.id) < ${docTypes.length}
+          ${campusWhereS}
+        ORDER BY c.name, s.last_name, s.first_name`).all(params);
+      const receivedRows = db.prepare(`
+        SELECT sd.student_id, sd.document_type_id FROM student_documents sd
+        JOIN students s ON s.id = sd.student_id WHERE s.status = 'AKTIF' ${campusWhereS}`).all(params);
+      const receivedSet = new Set(receivedRows.map(r => `${r.student_id}|${r.document_type_id}`));
+      return {
+        title: 'Eksik Evraklar',
+        columns: [
+          { header: 'Öğrenci No', key: 'student_no', width: 16 },
+          { header: 'Öğrenci', key: 'student', width: 24 },
+          { header: 'Kampüs', key: 'campus', width: 20 },
+          { header: 'Bölüm', key: 'department', width: 24 },
+          { header: 'Sınıf', key: 'grade', width: 8 },
+          { header: 'Şube', key: 'section', width: 7 },
+          { header: 'Eksik Sayısı', key: 'missing_count', width: 12 },
+          ...docTypes.map(dt => ({ header: dt.name, key: 'doc_' + dt.id, width: 16 })),
+          { header: 'Veli', key: 'parent_name', width: 22 },
+          { header: 'Veli Telefon', key: 'parent_phone', width: 15 },
+        ],
+        rows: students.map(s => {
+          const row = { ...s };
+          let missing = 0;
+          for (const dt of docTypes) {
+            const has = receivedSet.has(`${s.id}|${dt.id}`);
+            row['doc_' + dt.id] = has ? 'VAR' : 'EKSİK';
+            if (!has) missing++;
+          }
+          row.missing_count = missing;
+          return row;
+        }),
       };
     }
     case 'kampus-ozet': {

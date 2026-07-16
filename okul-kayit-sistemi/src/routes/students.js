@@ -58,15 +58,26 @@ router.get('/', requirePermission('student.view'), (req, res) => {
 // ---- Detay ----
 router.get('/:id', requirePermission('student.view'), (req, res) => {
   const s = db.prepare(`
-    SELECT s.*, c.name AS campus_name, d.name AS department_name FROM students s
+    SELECT s.*, c.name AS campus_name, d.name AS department_name,
+      sch.name AS previous_school_name, sch.city AS previous_school_city, sch.district AS previous_school_district
+    FROM students s
     JOIN campuses c ON c.id = s.campus_id
     LEFT JOIN departments d ON d.id = s.department_id
+    LEFT JOIN schools sch ON sch.id = s.previous_school_id
     WHERE s.id = ?`).get(req.params.id);
   if (!s) return res.status(404).json({ error: 'Öğrenci bulunamadı.' });
   if (!assertCampusAccess(req, s.campus_id)) {
     return res.status(403).json({ error: 'Bu öğrenci başka bir kampüse kayıtlı.' });
   }
   const parents = db.prepare('SELECT * FROM parents WHERE student_id = ? ORDER BY is_primary DESC, id').all(s.id);
+  const documents = db.prepare(`
+    SELECT dt.id, dt.name, dt.active,
+      CASE WHEN sd.id IS NULL THEN 0 ELSE 1 END AS received,
+      sd.received_at, u.full_name AS received_by_name
+    FROM document_types dt
+    LEFT JOIN student_documents sd ON sd.document_type_id = dt.id AND sd.student_id = ?
+    LEFT JOIN users u ON u.id = sd.received_by
+    WHERE dt.active = 1 ORDER BY dt.sort_order, dt.id`).all(s.id);
   const enrollments = db.prepare(`
     SELECT e.*, ay.name AS academic_year_name, dn.name AS department_name,
       (SELECT COALESCE(SUM(p.amount), 0) FROM payments p WHERE p.enrollment_id = e.id AND p.cancelled = 0) AS total_paid
@@ -88,7 +99,7 @@ router.get('/:id', requirePermission('student.view'), (req, res) => {
       WHERE p.enrollment_id = ? ORDER BY p.payment_date DESC, p.id DESC`).all(e.id);
     e.balance = Math.round((e.net_fee - e.total_paid) * 100) / 100;
   }
-  res.json({ student: s, parents, enrollments, grades: GRADES });
+  res.json({ student: s, parents, enrollments, documents, grades: GRADES });
 });
 
 function validateStudentBody(b) {
@@ -123,17 +134,25 @@ router.post('/', requirePermission('student.create'), (req, res) => {
     if (!dept) return res.status(400).json({ error: 'Seçilen bölüm bu kampüse ait değil.' });
     departmentId = dept.id;
   }
+  let previousSchoolId = null;
+  if (b.previous_school_id) {
+    const sch = db.prepare('SELECT * FROM schools WHERE id = ?').get(Number(b.previous_school_id));
+    if (!sch) return res.status(400).json({ error: 'Seçilen önceki okul bulunamadı.' });
+    previousSchoolId = sch.id;
+    if (!b.previous_school) b.previous_school = `${sch.name} (${sch.district}/${sch.city})`;
+  }
   const result = db.transaction(() => {
     const studentNo = nextStudentNo(Number(b.campus_id));
     const info = db.prepare(`
       INSERT INTO students (student_no, tc_no, first_name, last_name, birth_date, birth_place, gender,
-        blood_type, nationality, campus_id, department_id, grade, section, previous_school, health_notes,
-        address, city, district, status, notes, created_by)
+        blood_type, nationality, campus_id, department_id, grade, section, previous_school, previous_school_id,
+        health_notes, address, city, district, status, notes, created_by)
       VALUES (@student_no, @tc_no, @first_name, @last_name, @birth_date, @birth_place, @gender,
-        @blood_type, @nationality, @campus_id, @department_id, @grade, @section, @previous_school, @health_notes,
-        @address, @city, @district, @status, @notes, @created_by)`)
+        @blood_type, @nationality, @campus_id, @department_id, @grade, @section, @previous_school, @previous_school_id,
+        @health_notes, @address, @city, @district, @status, @notes, @created_by)`)
       .run({
         department_id: departmentId,
+        previous_school_id: previousSchoolId,
         student_no: studentNo,
         tc_no: tc,
         first_name: String(b.first_name).trim(),
@@ -156,6 +175,11 @@ router.post('/', requirePermission('student.create'), (req, res) => {
         created_by: req.user.id,
       });
     const studentId = info.lastInsertRowid;
+    const insDoc = db.prepare(`
+      INSERT OR IGNORE INTO student_documents (student_id, document_type_id, received_by) VALUES (?, ?, ?)`);
+    for (const docId of (Array.isArray(b.documents) ? b.documents : [])) {
+      if (Number(docId)) insDoc.run(studentId, Number(docId), req.user.id);
+    }
     for (const p of (Array.isArray(b.parents) ? b.parents : [])) {
       if (!p.full_name || !p.relation) continue;
       db.prepare(`
@@ -200,6 +224,20 @@ router.put('/:id', requirePermission('student.edit'), (req, res) => {
   for (const f of STUDENT_FIELDS) {
     if (b[f] !== undefined) { sets.push(`${f} = @${f}`); params[f] = b[f] === null ? '' : String(b[f]).trim(); }
   }
+  if (b.previous_school_id !== undefined) {
+    let schId = null;
+    if (b.previous_school_id) {
+      const sch = db.prepare('SELECT * FROM schools WHERE id = ?').get(Number(b.previous_school_id));
+      if (!sch) return res.status(400).json({ error: 'Seçilen önceki okul bulunamadı.' });
+      schId = sch.id;
+      if (b.previous_school === undefined) {
+        sets.push('previous_school = @previous_school');
+        params.previous_school = `${sch.name} (${sch.district}/${sch.city})`;
+      }
+    }
+    sets.push('previous_school_id = @previous_school_id');
+    params.previous_school_id = schId;
+  }
   if (b.department_id !== undefined) {
     let deptId = null;
     if (b.department_id) {
@@ -231,6 +269,26 @@ router.delete('/:id', requirePermission('student.delete'), (req, res) => {
   }
   db.prepare('DELETE FROM students WHERE id = ?').run(s.id);
   audit(req.user.id, 'DELETE', 'student', s.id, s.student_no);
+  res.json({ ok: true });
+});
+
+// ---- Evrak teslim işaretleme ----
+router.put('/:id/documents/:docId', requirePermission('student.edit'), (req, res) => {
+  const s = db.prepare('SELECT * FROM students WHERE id = ?').get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Öğrenci bulunamadı.' });
+  if (!assertCampusAccess(req, s.campus_id)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
+  const doc = db.prepare('SELECT * FROM document_types WHERE id = ?').get(req.params.docId);
+  if (!doc) return res.status(404).json({ error: 'Evrak türü bulunamadı.' });
+  const received = !!(req.body || {}).received;
+  if (received) {
+    db.prepare(`
+      INSERT OR IGNORE INTO student_documents (student_id, document_type_id, received_by)
+      VALUES (?, ?, ?)`).run(s.id, doc.id, req.user.id);
+  } else {
+    db.prepare('DELETE FROM student_documents WHERE student_id = ? AND document_type_id = ?')
+      .run(s.id, doc.id);
+  }
+  audit(req.user.id, received ? 'DOC_RECEIVED' : 'DOC_REMOVED', 'student_document', s.id, doc.name);
   res.json({ ok: true });
 });
 

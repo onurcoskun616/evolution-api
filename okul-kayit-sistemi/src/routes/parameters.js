@@ -255,6 +255,133 @@ router.get('/sections', (req, res) => {
   res.json({ sections, plan_missing: false, max_class_size: MAX_CLASS_SIZE });
 });
 
+// ---- Evrak türleri ----
+router.get('/documents', (req, res) => {
+  res.json({ document_types: db.prepare('SELECT * FROM document_types ORDER BY sort_order, id').all() });
+});
+
+router.post('/documents', requirePermission('settings.manage'), (req, res) => {
+  const name = String((req.body || {}).name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Evrak adı zorunludur.' });
+  if (db.prepare('SELECT id FROM document_types WHERE name = ?').get(name)) {
+    return res.status(400).json({ error: 'Bu isimde bir evrak türü zaten var.' });
+  }
+  const max = db.prepare('SELECT COALESCE(MAX(sort_order),0) AS m FROM document_types').get().m;
+  const info = db.prepare('INSERT INTO document_types (name, sort_order) VALUES (?, ?)').run(name, max + 1);
+  audit(req.user.id, 'CREATE', 'document_type', info.lastInsertRowid, name);
+  res.json({ id: info.lastInsertRowid });
+});
+
+router.put('/documents/:id', requirePermission('settings.manage'), (req, res) => {
+  const doc = db.prepare('SELECT * FROM document_types WHERE id = ?').get(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Evrak türü bulunamadı.' });
+  const b = req.body || {};
+  const name = b.name !== undefined ? String(b.name).trim() : doc.name;
+  if (!name) return res.status(400).json({ error: 'Evrak adı boş olamaz.' });
+  db.prepare('UPDATE document_types SET name = ?, active = ? WHERE id = ?')
+    .run(name, b.active !== undefined ? (b.active ? 1 : 0) : doc.active, doc.id);
+  audit(req.user.id, 'UPDATE', 'document_type', doc.id, name);
+  res.json({ ok: true });
+});
+
+// ---- Önceki okul kataloğu ----
+router.get('/schools', (req, res) => {
+  const q = req.query || {};
+  const where = ['1=1'];
+  const params = {};
+  if (q.city) { where.push('city = @city'); params.city = String(q.city).trim(); }
+  if (q.district) { where.push('district = @district'); params.district = String(q.district).trim(); }
+  if (q.type) { where.push('type = @type'); params.type = q.type; }
+  if (q.search) { where.push('name LIKE @search'); params.search = `%${String(q.search).trim()}%`; }
+  if (!q.include_passive) where.push('active = 1');
+  const rows = db.prepare(`
+    SELECT * FROM schools WHERE ${where.join(' AND ')} ORDER BY city, district, name LIMIT 500`).all(params);
+  const cities = db.prepare('SELECT DISTINCT city FROM schools WHERE active = 1 ORDER BY city').all().map(r => r.city);
+  const districts = q.city
+    ? db.prepare('SELECT DISTINCT district FROM schools WHERE city = ? AND active = 1 ORDER BY district')
+        .all(String(q.city).trim()).map(r => r.district)
+    : [];
+  res.json({ schools: rows, cities, districts });
+});
+
+router.post('/schools', requirePermission('settings.manage'), (req, res) => {
+  const b = req.body || {};
+  const city = String(b.city || '').trim();
+  const district = String(b.district || '').trim();
+  const name = String(b.name || '').trim();
+  const type = b.type === 'LISE' ? 'LISE' : 'ORTAOKUL';
+  if (!city || !district || !name) {
+    return res.status(400).json({ error: 'İl, ilçe ve okul adı zorunludur.' });
+  }
+  if (db.prepare('SELECT id FROM schools WHERE city = ? AND district = ? AND name = ?').get(city, district, name)) {
+    return res.status(400).json({ error: 'Bu okul zaten kayıtlı.' });
+  }
+  const info = db.prepare('INSERT INTO schools (city, district, name, type) VALUES (?, ?, ?, ?)')
+    .run(city, district, name, type);
+  audit(req.user.id, 'CREATE', 'school', info.lastInsertRowid, `${city}/${district}/${name}`);
+  res.json({ id: info.lastInsertRowid });
+});
+
+router.put('/schools/:id', requirePermission('settings.manage'), (req, res) => {
+  const school = db.prepare('SELECT * FROM schools WHERE id = ?').get(req.params.id);
+  if (!school) return res.status(404).json({ error: 'Okul bulunamadı.' });
+  const b = req.body || {};
+  const city = b.city !== undefined ? String(b.city).trim() : school.city;
+  const district = b.district !== undefined ? String(b.district).trim() : school.district;
+  const name = b.name !== undefined ? String(b.name).trim() : school.name;
+  if (!city || !district || !name) return res.status(400).json({ error: 'İl, ilçe ve okul adı boş olamaz.' });
+  const dup = db.prepare('SELECT id FROM schools WHERE city = ? AND district = ? AND name = ? AND id != ?')
+    .get(city, district, name, school.id);
+  if (dup) return res.status(400).json({ error: 'Bu okul zaten kayıtlı.' });
+  db.prepare('UPDATE schools SET city = ?, district = ?, name = ?, type = ?, active = ? WHERE id = ?')
+    .run(city, district, name,
+      b.type === 'LISE' ? 'LISE' : b.type === 'ORTAOKUL' ? 'ORTAOKUL' : school.type,
+      b.active !== undefined ? (b.active ? 1 : 0) : school.active, school.id);
+  audit(req.user.id, 'UPDATE', 'school', school.id, name);
+  res.json({ ok: true });
+});
+
+/**
+ * Excel ile okul yükleme. Beklenen sütunlar (1. satır başlık olabilir):
+ * A: İl, B: İlçe, C: Okul Adı, D: Tür (Ortaokul/Lise, boşsa Ortaokul)
+ * Mevcut okullar (il+ilçe+ad) atlanır.
+ */
+router.post('/schools/import',
+  express.raw({ type: () => true, limit: '15mb' }),
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    try {
+      if (!req.body || !req.body.length) return res.status(400).json({ error: 'Dosya alınamadı.' });
+      const ExcelJS = require('exceljs');
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(req.body);
+      const ws = wb.worksheets[0];
+      if (!ws) return res.status(400).json({ error: 'Excel dosyasında sayfa bulunamadı.' });
+      let added = 0, skipped = 0, invalid = 0;
+      const exists = db.prepare('SELECT id FROM schools WHERE city = ? AND district = ? AND name = ?');
+      const ins = db.prepare('INSERT INTO schools (city, district, name, type) VALUES (?, ?, ?, ?)');
+      const cellText = c => String(c?.value?.result ?? c?.value ?? '').trim();
+      db.transaction(() => {
+        ws.eachRow(row => {
+          const city = cellText(row.getCell(1));
+          const district = cellText(row.getCell(2));
+          const name = cellText(row.getCell(3));
+          const typeRaw = cellText(row.getCell(4)).toLocaleUpperCase('tr-TR');
+          if (!city || !district || !name) { invalid++; return; }
+          if (/^(İL|IL)$/i.test(city)) return; // başlık satırı
+          const type = typeRaw.startsWith('L') ? 'LISE' : 'ORTAOKUL';
+          if (exists.get(city, district, name)) { skipped++; return; }
+          ins.run(city, district, name, type);
+          added++;
+        });
+      })();
+      audit(req.user.id, 'IMPORT', 'school', null, `eklendi=${added} atlandı=${skipped}`);
+      res.json({ added, skipped, invalid });
+    } catch (e) {
+      res.status(400).json({ error: 'Excel dosyası okunamadı: ' + e.message });
+    }
+  });
+
 module.exports = router;
 module.exports.getParams = getParams;
 module.exports.GRADES = GRADES;

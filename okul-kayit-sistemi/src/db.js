@@ -273,6 +273,51 @@ if (!enCols.includes('department_id')) {
   `);
 }
 
+// Evrak takibi ve önceki okul kataloğu tabloları
+db.exec(`
+CREATE TABLE IF NOT EXISTS document_types (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  active INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS student_documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  document_type_id INTEGER NOT NULL REFERENCES document_types(id),
+  received_at TEXT NOT NULL DEFAULT (datetime('now')),
+  received_by INTEGER REFERENCES users(id),
+  UNIQUE(student_id, document_type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_student_documents ON student_documents(student_id);
+
+CREATE TABLE IF NOT EXISTS schools (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  city TEXT NOT NULL,
+  district TEXT NOT NULL,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'ORTAOKUL' CHECK (type IN ('ORTAOKUL','LISE')),
+  active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(city, district, name)
+);
+CREATE INDEX IF NOT EXISTS idx_schools_city ON schools(city, district);
+`);
+
+// Öğrenciye önceki okul referansı
+const stCols2 = db.prepare('PRAGMA table_info(students)').all().map(c => c.name);
+if (!stCols2.includes('previous_school_id')) {
+  db.exec('ALTER TABLE students ADD COLUMN previous_school_id INTEGER REFERENCES schools(id)');
+}
+
+// Varsayılan evrak türleri (boş katalogda bir kez eklenir)
+const DEFAULT_DOCUMENT_TYPES = ['Fotoğraf', 'İkametgah Belgesi', 'Nüfus Cüzdanı Fotokopisi',
+  'Öğrenci Belgesi', 'Sağlık Belgesi', 'Tasdikname', 'Veli Nüfus Cüzdanı Fotokopisi'];
+if (db.prepare('SELECT COUNT(*) AS c FROM document_types').get().c === 0) {
+  const insDoc = db.prepare('INSERT INTO document_types (name, sort_order) VALUES (?, ?)');
+  DEFAULT_DOCUMENT_TYPES.forEach((name, i) => insDoc.run(name, i));
+}
+
 // Varsayılan ücret kalemleri (boş katalogda bir kez eklenir)
 const DEFAULT_FEE_ITEMS = ['Eğitim Ücreti', 'Kıyafet Ücreti', 'Yemek Ücreti',
   'Kırtasiye Ücreti', 'Kitap Ücreti', 'Servis Ücreti'];
