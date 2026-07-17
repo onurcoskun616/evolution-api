@@ -292,6 +292,16 @@ CREATE TABLE IF NOT EXISTS student_documents (
 );
 CREATE INDEX IF NOT EXISTS idx_student_documents ON student_documents(student_id);
 
+CREATE TABLE IF NOT EXISTS neighborhoods (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  city TEXT NOT NULL,
+  district TEXT NOT NULL,
+  name TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(city, district, name)
+);
+CREATE INDEX IF NOT EXISTS idx_neighborhoods ON neighborhoods(city, district);
+
 CREATE TABLE IF NOT EXISTS schools (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   city TEXT NOT NULL,
@@ -304,10 +314,13 @@ CREATE TABLE IF NOT EXISTS schools (
 CREATE INDEX IF NOT EXISTS idx_schools_city ON schools(city, district);
 `);
 
-// Öğrenciye önceki okul referansı
+// Öğrenciye önceki okul referansı ve mahalle alanı
 const stCols2 = db.prepare('PRAGMA table_info(students)').all().map(c => c.name);
 if (!stCols2.includes('previous_school_id')) {
   db.exec('ALTER TABLE students ADD COLUMN previous_school_id INTEGER REFERENCES schools(id)');
+}
+if (!stCols2.includes('neighborhood')) {
+  db.exec("ALTER TABLE students ADD COLUMN neighborhood TEXT NOT NULL DEFAULT ''");
 }
 
 // Varsayılan evrak türleri (boş katalogda bir kez eklenir)

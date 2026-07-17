@@ -128,7 +128,7 @@ async function main() {
       token: campusToken,
       body: {
         first_name: 'Test', last_name: 'Öğrenci', campus_id: campusId,
-        tc_no: '99988877766', gender: 'KIZ', grade: '10',
+        tc_no: '12345678950', gender: 'KIZ', grade: '10',
         birth_date: '2015-03-10', city: 'İstanbul', district: 'Fatih',
         parents: [
           { relation: 'ANNE', full_name: 'Test Anne', phone: '0532 111 22 33', is_primary: true },
@@ -146,7 +146,7 @@ async function main() {
   await test('Aynı TC ile ikinci öğrenci reddedilir', async () => {
     const r = await req('POST', '/students', {
       token: campusToken,
-      body: { first_name: 'X', last_name: 'Y', campus_id: campusId, tc_no: '99988877766' },
+      body: { first_name: 'X', last_name: 'Y', campus_id: campusId, tc_no: '12345678950' },
     });
     assert.equal(r.status, 400);
   });
@@ -778,6 +778,107 @@ async function main() {
     const list = await req('GET', '/parameters/schools?city=Kocaeli', { token: campusToken });
     assert.equal(list.data.schools.length, 3);
     assert.equal(list.data.schools.find(x => x.name === 'Gebze Anadolu Lisesi').type, 'LISE');
+  });
+
+  await test('TC Kimlik doğrulama: geçersiz TC reddedilir', async () => {
+    // Öğrenci TC'si: kontrol basamağı tutmuyor
+    let r = await req('POST', '/students', {
+      token: campusToken,
+      body: { first_name: 'Tc', last_name: 'Bozuk', campus_id: campusId, tc_no: '12345678901' },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(/TC Kimlik/i.test(r.data.error), r.data.error);
+    // Veli TC'si geçersiz
+    r = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: 'Veli', last_name: 'TcBozuk', campus_id: campusId,
+        parents: [{ relation: 'ANNE', full_name: 'Bozuk Tc Anne', tc_no: '11111111111', phone: '0532 111 22 33' }],
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(/Bozuk Tc Anne/.test(r.data.error), r.data.error);
+    // Ödeme sorumlusu TC'si geçersiz -> kayıt reddedilir
+    const s = await req('POST', '/students', {
+      token: campusToken, body: { first_name: 'Payer', last_name: 'Tc', campus_id: campusId },
+    });
+    r = await req('POST', '/enrollments', {
+      token: campusToken,
+      body: {
+        student_id: s.data.id, academic_year_id: activeYearId, ...freePlacement,
+        items: [{ fee_item_id: pricedItems[0].id }], installment_count: 3, first_due_date: '2026-09-15',
+        payer_tc: '98765432100',
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(/Ödeme sorumlusu/i.test(r.data.error), r.data.error);
+  });
+
+  await test('Telefon doğrulama: geçersiz reddedilir, geçerli normalize edilir', async () => {
+    // Geçersiz telefon
+    let r = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: 'Tel', last_name: 'Bozuk', campus_id: campusId,
+        parents: [{ relation: 'BABA', full_name: 'Bozuk Tel Baba', phone: '123' }],
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(/telefon/i.test(r.data.error), r.data.error);
+    // Farklı biçimlerde girilen numaralar normalize edilir
+    r = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: 'Tel', last_name: 'Normalize', campus_id: campusId,
+        parents: [
+          { relation: 'ANNE', full_name: 'Anne N', phone: '5321234567', is_primary: true },
+          { relation: 'BABA', full_name: 'Baba N', phone: '+90 (533) 765 43 21' },
+        ],
+      },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const d = await req('GET', '/students/' + r.data.id, { token: campusToken });
+    assert.equal(d.data.parents.find(p => p.full_name === 'Anne N').phone, '0532 123 45 67');
+    assert.equal(d.data.parents.find(p => p.full_name === 'Baba N').phone, '0533 765 43 21');
+  });
+
+  await test('Adres kataloğu: mahalle ekleme, Excel yükleme ve öğrenciye yazma', async () => {
+    const add = await req('POST', '/parameters/neighborhoods', {
+      token: hqToken, body: { city: 'İstanbul', district: 'Esenyurt', name: 'Test Mahallesi' },
+    });
+    assert.equal(add.status, 200, JSON.stringify(add.data));
+    // Excel ile yükleme
+    const ExcelJS = require('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Mahalleler');
+    ws.addRow(['İl', 'İlçe', 'Mahalle']);
+    ws.addRow(['Ankara', 'Çankaya', 'Bahçelievler Mahallesi']);
+    ws.addRow(['Ankara', 'Çankaya', 'Ayrancı Mahallesi']);
+    ws.addRow(['İstanbul', 'Esenyurt', 'Test Mahallesi']); // mükerrer
+    const buf = await wb.xlsx.writeBuffer();
+    const res = await fetch(BASE + '/api/parameters/neighborhoods/import', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + hqToken, 'Content-Type': 'application/octet-stream' },
+      body: buf,
+    });
+    const data = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(data));
+    assert.equal(data.added, 2);
+    assert.equal(data.skipped, 1);
+    const list = await req('GET', '/parameters/neighborhoods?city=Ankara', { token: campusToken });
+    assert.equal(list.data.districts.length, 1);
+    assert.equal(list.data.neighborhoods.length, 2);
+    // Öğrenci adresine mahalle yazılır
+    const s = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: 'Adres', last_name: 'Testi', campus_id: campusId,
+        city: 'İstanbul', district: 'Esenyurt', neighborhood: 'Test Mahallesi', address: '5. Sok. No:3',
+      },
+    });
+    assert.equal(s.status, 200, JSON.stringify(s.data));
+    const d = await req('GET', '/students/' + s.data.id, { token: campusToken });
+    assert.equal(d.data.student.neighborhood, 'Test Mahallesi');
   });
 
   await test('Denetim kaydı tutulur', async () => {

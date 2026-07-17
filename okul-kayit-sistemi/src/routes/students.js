@@ -1,6 +1,7 @@
 const express = require('express');
 const { db, audit, today } = require('../db');
 const { requirePermission, campusScope, assertCampusAccess } = require('../auth');
+const { tcError, phoneField } = require('../validate');
 
 const router = express.Router();
 
@@ -106,13 +107,31 @@ function validateStudentBody(b) {
   if (!b.first_name || !String(b.first_name).trim()) return 'Öğrenci adı zorunludur.';
   if (!b.last_name || !String(b.last_name).trim()) return 'Öğrenci soyadı zorunludur.';
   if (!b.campus_id) return 'Kampüs seçimi zorunludur.';
-  if (b.tc_no && !/^\d{11}$/.test(String(b.tc_no).trim())) return 'TC Kimlik No 11 haneli rakam olmalıdır.';
+  const tcErr = tcError(b.tc_no, 'Öğrenci');
+  if (tcErr) return tcErr;
+  return null;
+}
+
+/** Veli kayıtlarını doğrular ve telefonları normalize eder; hata mesajı ya da null döner. */
+function validateParents(parents) {
+  for (const p of parents) {
+    if (!p.full_name || !p.relation) continue;
+    const label = `Veli (${String(p.full_name).trim()})`;
+    const tErr = tcError(p.tc_no, label);
+    if (tErr) return tErr;
+    for (const key of ['phone', 'phone2']) {
+      if (p[key] === undefined) continue;
+      const r = phoneField(p[key], label);
+      if (r.error) return r.error;
+      p[key] = r.value;
+    }
+  }
   return null;
 }
 
 const STUDENT_FIELDS = ['tc_no', 'first_name', 'last_name', 'birth_date', 'birth_place', 'gender',
   'blood_type', 'nationality', 'grade', 'section', 'previous_school', 'health_notes',
-  'address', 'city', 'district', 'status', 'notes'];
+  'address', 'city', 'district', 'neighborhood', 'status', 'notes'];
 
 // ---- Yeni öğrenci ----
 router.post('/', requirePermission('student.create'), (req, res) => {
@@ -134,6 +153,9 @@ router.post('/', requirePermission('student.create'), (req, res) => {
     if (!dept) return res.status(400).json({ error: 'Seçilen bölüm bu kampüse ait değil.' });
     departmentId = dept.id;
   }
+  const parentList = Array.isArray(b.parents) ? b.parents : [];
+  const parentErr = validateParents(parentList);
+  if (parentErr) return res.status(400).json({ error: parentErr });
   let previousSchoolId = null;
   if (b.previous_school_id) {
     const sch = db.prepare('SELECT * FROM schools WHERE id = ?').get(Number(b.previous_school_id));
@@ -146,10 +168,10 @@ router.post('/', requirePermission('student.create'), (req, res) => {
     const info = db.prepare(`
       INSERT INTO students (student_no, tc_no, first_name, last_name, birth_date, birth_place, gender,
         blood_type, nationality, campus_id, department_id, grade, section, previous_school, previous_school_id,
-        health_notes, address, city, district, status, notes, created_by)
+        health_notes, address, city, district, neighborhood, status, notes, created_by)
       VALUES (@student_no, @tc_no, @first_name, @last_name, @birth_date, @birth_place, @gender,
         @blood_type, @nationality, @campus_id, @department_id, @grade, @section, @previous_school, @previous_school_id,
-        @health_notes, @address, @city, @district, @status, @notes, @created_by)`)
+        @health_notes, @address, @city, @district, @neighborhood, @status, @notes, @created_by)`)
       .run({
         department_id: departmentId,
         previous_school_id: previousSchoolId,
@@ -170,6 +192,7 @@ router.post('/', requirePermission('student.create'), (req, res) => {
         address: b.address || '',
         city: b.city || '',
         district: b.district || '',
+        neighborhood: b.neighborhood || '',
         status: b.status || 'AKTIF',
         notes: b.notes || '',
         created_by: req.user.id,
@@ -180,7 +203,7 @@ router.post('/', requirePermission('student.create'), (req, res) => {
     for (const docId of (Array.isArray(b.documents) ? b.documents : [])) {
       if (Number(docId)) insDoc.run(studentId, Number(docId), req.user.id);
     }
-    for (const p of (Array.isArray(b.parents) ? b.parents : [])) {
+    for (const p of parentList) {
       if (!p.full_name || !p.relation) continue;
       db.prepare(`
         INSERT INTO parents (student_id, relation, full_name, tc_no, phone, phone2, email,
@@ -204,9 +227,8 @@ router.put('/:id', requirePermission('student.edit'), (req, res) => {
     return res.status(403).json({ error: 'Bu öğrenci başka bir kampüse kayıtlı.' });
   }
   const b = req.body || {};
-  if (b.tc_no && !/^\d{11}$/.test(String(b.tc_no).trim())) {
-    return res.status(400).json({ error: 'TC Kimlik No 11 haneli rakam olmalıdır.' });
-  }
+  const tcErrPut = tcError(b.tc_no, 'Öğrenci');
+  if (tcErrPut) return res.status(400).json({ error: tcErrPut });
   if (b.tc_no) {
     const dup = db.prepare('SELECT id FROM students WHERE tc_no = ? AND id != ?').get(String(b.tc_no).trim(), s.id);
     if (dup) return res.status(400).json({ error: 'Bu TC Kimlik No başka bir öğrenciye kayıtlı.' });
@@ -299,6 +321,8 @@ router.post('/:id/parents', requirePermission('student.edit'), (req, res) => {
   if (!assertCampusAccess(req, s.campus_id)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
   const p = req.body || {};
   if (!p.full_name || !p.relation) return res.status(400).json({ error: 'Yakınlık ve ad soyad zorunludur.' });
+  const vErr = validateParents([p]);
+  if (vErr) return res.status(400).json({ error: vErr });
   const info = db.prepare(`
     INSERT INTO parents (student_id, relation, full_name, tc_no, phone, phone2, email,
       occupation, workplace, education, address, is_primary)
@@ -317,6 +341,11 @@ router.put('/:id/parents/:parentId', requirePermission('student.edit'), (req, re
   const existing = db.prepare('SELECT * FROM parents WHERE id = ? AND student_id = ?').get(req.params.parentId, s.id);
   if (!existing) return res.status(404).json({ error: 'Veli kaydı bulunamadı.' });
   const p = req.body || {};
+  const check = { ...p, full_name: p.full_name || existing.full_name, relation: p.relation || existing.relation };
+  const vErr = validateParents([check]);
+  if (vErr) return res.status(400).json({ error: vErr });
+  if (p.phone !== undefined) p.phone = check.phone;   // normalize edilmiş halini kullan
+  if (p.phone2 !== undefined) p.phone2 = check.phone2;
   db.prepare(`
     UPDATE parents SET relation = ?, full_name = ?, tc_no = ?, phone = ?, phone2 = ?, email = ?,
       occupation = ?, workplace = ?, education = ?, address = ?, is_primary = ? WHERE id = ?`)

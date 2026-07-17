@@ -53,9 +53,14 @@ const DEPARTMENTS = ['Bilişim Teknolojileri', 'Elektrik-Elektronik Teknolojisi'
 const METHODS = ['NAKIT', 'KREDI_KARTI', 'KREDI_KARTI', 'KREDI_KARTI', 'HAVALE_EFT', 'HAVALE_EFT', 'KMH', 'SENET', 'CEK', 'NAKIT'];
 
 function fakeTc() {
-  let s = String(rint(1, 9));
-  for (let i = 0; i < 10; i++) s += String(rint(0, 9));
-  return s;
+  // Resmi kontrol basamağı algoritmasına uygun geçerli TC üretir
+  const d = [rint(1, 9)];
+  for (let i = 0; i < 8; i++) d.push(rint(0, 9));
+  const odd = d[0] + d[2] + d[4] + d[6] + d[8];
+  const even = d[1] + d[3] + d[5] + d[7];
+  const d10 = ((odd * 7 - even) % 10 + 10) % 10;
+  const d11 = (d.reduce((a, b) => a + b, 0) + d10) % 10;
+  return d.join('') + d10 + d11;
 }
 function fakePhone() {
   return `05${rint(30, 55)} ${rint(100, 999)} ${String(rint(0, 99)).padStart(2, '0')} ${String(rint(0, 99)).padStart(2, '0')}`;
@@ -149,6 +154,20 @@ const SCHOOL_SEED = [
   ['Tekirdağ', 'Süleymanpaşa', 'Namık Kemal Ortaokulu', 'ORTAOKUL'],
 ];
 const insSchool = db.prepare('INSERT INTO schools (city, district, name, type) VALUES (?, ?, ?, ?)');
+
+// ---- Mahalle kataloğu (örnek) ----
+const HOOD_SEED = [];
+const HOOD_NAMES = ['Cumhuriyet', 'Atatürk', 'Fatih', 'Yenikent', 'Zümrütevler', 'İnönü', 'Barbaros', 'Mevlana'];
+for (const d of DISTRICTS) {
+  for (let i = 0; i < 3; i++) HOOD_SEED.push(['İstanbul', d, `${HOOD_NAMES[(i * 5 + d.length) % HOOD_NAMES.length]} Mahallesi`]);
+}
+HOOD_SEED.push(['Tekirdağ', 'Çorlu', 'Reşadiye Mahallesi'], ['Tekirdağ', 'Çorlu', 'Kazımiye Mahallesi'], ['Tekirdağ', 'Çorlu', 'Hatip Mahallesi']);
+const insHood = db.prepare('INSERT OR IGNORE INTO neighborhoods (city, district, name) VALUES (?, ?, ?)');
+const hoodByDistrict = {};
+for (const [c, d, n] of HOOD_SEED) {
+  insHood.run(c, d, n);
+  (hoodByDistrict[d] = hoodByDistrict[d] || []).push(n);
+}
 const schoolIds = SCHOOL_SEED.map(s => Number(insSchool.run(...s).lastInsertRowid));
 
 // Evrak türleri (db.js açılışta ekledi)
@@ -179,8 +198,8 @@ for (const c of campusIds) {
 // ---- Öğrenciler + kayıtlar + taksitler + tahsilatlar ----
 const insStudent = db.prepare(`
   INSERT INTO students (student_no, tc_no, first_name, last_name, birth_date, birth_place, gender,
-    blood_type, campus_id, department_id, grade, section, address, city, district, status, created_by)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    blood_type, campus_id, department_id, grade, section, address, city, district, neighborhood, status, created_by)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 const insParent = db.prepare(`
   INSERT INTO parents (student_id, relation, full_name, tc_no, phone, email, occupation, workplace, address, is_primary)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -319,7 +338,8 @@ const seedAll = db.transaction(() => {
         dateStr(birthYear, rint(1, 12), rint(1, 28)), 'İstanbul', gender,
         pick(['A Rh+', 'A Rh-', 'B Rh+', '0 Rh+', '0 Rh-', 'AB Rh+', '']),
         campus.id, deptId, studentGrade, studentSection,
-        `${district} Mah. ${rint(1, 99)}. Sok. No:${rint(1, 60)}`, 'İstanbul', district,
+        `${rint(1, 99)}. Sok. No:${rint(1, 60)}`, 'İstanbul', district,
+        pick(hoodByDistrict[district] || ['Merkez Mahallesi']),
         status, userIds[1]).lastInsertRowid);
 
       const motherName = `${pick(FEMALE_NAMES)} ${last}`;

@@ -7,6 +7,7 @@ const router = express.Router();
 const PAYMENT_METHODS = ['NAKIT', 'KREDI_KARTI', 'KMH', 'SENET', 'HAVALE_EFT', 'CEK', 'MAIL_ORDER'];
 const ENROLLMENT_TYPES = ['DIS_KAYIT', 'IC_KAYIT', 'NAKIL'];
 const { GRADES, MAX_CLASS_SIZE, SECTION_LETTERS } = require('./parameters');
+const { tcError, phoneField } = require('../validate');
 
 /**
  * Bölüm + sınıf + şube doğrulaması:
@@ -255,6 +256,13 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
   if (b.default_payment_method && !PAYMENT_METHODS.includes(b.default_payment_method)) {
     return res.status(400).json({ error: 'Geçersiz ödeme türü.' });
   }
+  const payerTcErr = tcError(b.payer_tc, 'Ödeme sorumlusu');
+  if (payerTcErr) return res.status(400).json({ error: payerTcErr });
+  if (b.payer_phone !== undefined) {
+    const r = phoneField(b.payer_phone, 'Ödeme sorumlusu');
+    if (r.error) return res.status(400).json({ error: r.error });
+    b.payer_phone = r.value;
+  }
   let fees, plan, itemsInfo, placement;
   try {
     placement = validatePlacement(student.campus_id, year.id, b);
@@ -365,6 +373,13 @@ router.put('/:id', requirePermission('enrollment.edit'), (req, res) => {
         }
       }
     })();
+  }
+  const payerTcErrPut = tcError(b.payer_tc, 'Ödeme sorumlusu');
+  if (payerTcErrPut) return res.status(400).json({ error: payerTcErrPut });
+  if (b.payer_phone !== undefined) {
+    const rp = phoneField(b.payer_phone, 'Ödeme sorumlusu');
+    if (rp.error) return res.status(400).json({ error: rp.error });
+    b.payer_phone = rp.value;
   }
   // Bölüm / sınıf / şube değişikliği (öğrenci bölüm ve şube değiştirebilir)
   if (b.department_id !== undefined || b.section !== undefined || b.grade !== undefined) {

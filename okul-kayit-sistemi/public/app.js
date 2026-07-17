@@ -101,6 +101,46 @@ function printHTML(title, bodyHtml) {
   setTimeout(() => { try { w.print(); } catch {} }, 400);
 }
 
+// ---- TC Kimlik ve telefon doğrulama (sunucudaki algoritmanın aynısı) ----
+function isValidTCClient(tc) {
+  tc = String(tc || '').trim();
+  if (!/^[1-9]\d{10}$/.test(tc)) return false;
+  const d = tc.split('').map(Number);
+  const odd = d[0] + d[2] + d[4] + d[6] + d[8];
+  const even = d[1] + d[3] + d[5] + d[7];
+  return d[9] === ((odd * 7 - even) % 10 + 10) % 10 &&
+         d[10] === d.slice(0, 10).reduce((a, b) => a + b, 0) % 10;
+}
+function normalizePhoneClient(phone) {
+  let digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.length === 12 && digits.startsWith('90')) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1);
+  if (digits.length !== 10 || !/^[2-5]/.test(digits)) return null;
+  return `0${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6, 8)} ${digits.slice(8)}`;
+}
+// data-tc / data-phone öznitelikli tüm alanlar odaktan çıkınca doğrulanır
+document.addEventListener('focusout', e => {
+  const el = e.target;
+  if (!el || !el.matches) return;
+  if (el.matches('[data-tc]')) {
+    const v = el.value.trim();
+    if (v && !isValidTCClient(v)) {
+      el.style.borderColor = 'var(--danger)';
+      toast('Girilen TC Kimlik No geçersiz — kontrol basamağı tutmuyor. Lütfen kontrol edin.', 'error');
+    } else el.style.borderColor = '';
+  }
+  if (el.matches('[data-phone]')) {
+    const v = el.value.trim();
+    if (!v) { el.style.borderColor = ''; return; }
+    const n = normalizePhoneClient(v);
+    if (n === null) {
+      el.style.borderColor = 'var(--danger)';
+      toast('Telefon numarası geçersiz. Örnek: 0532 111 22 33', 'error');
+    } else { el.value = n; el.style.borderColor = ''; }
+  }
+});
+
 function toast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
@@ -505,7 +545,7 @@ async function pageStudentDetail(id) {
           <tr><td class="muted">Bölüm</td><td>${esc(s.department_name || '-')}</td></tr>
           <tr><td class="muted">Sınıf / Şube</td><td>${esc(s.grade)}${s.section ? ' - ' + esc(s.section) : ''}</td></tr>
           <tr><td class="muted">Önceki Okul</td><td>${esc(s.previous_school || '-')}</td></tr>
-          <tr><td class="muted">Adres</td><td>${esc(s.address || '-')} ${esc(s.district || '')} ${esc(s.city || '')}</td></tr>
+          <tr><td class="muted">Adres</td><td>${esc(s.address || '-')} ${esc(s.neighborhood || '')} ${esc(s.district || '')} ${esc(s.city || '')}</td></tr>
           <tr><td class="muted">Sağlık Notları</td><td>${esc(s.health_notes || '-')}</td></tr>
           <tr><td class="muted">Notlar</td><td>${esc(s.notes || '-')}</td></tr>
         </tbody></table></div>
@@ -682,7 +722,7 @@ function studentFormFields(s = {}, opts = {}) {
     <div class="form-grid">
       <div class="field"><label>Adı *</label><input id="sf-first" value="${esc(s.first_name || '')}"></div>
       <div class="field"><label>Soyadı *</label><input id="sf-last" value="${esc(s.last_name || '')}"></div>
-      <div class="field"><label>TC Kimlik No</label><input id="sf-tc" maxlength="11" value="${esc(s.tc_no || '')}"></div>
+      <div class="field"><label>TC Kimlik No</label><input id="sf-tc" data-tc maxlength="11" value="${esc(s.tc_no || '')}"></div>
       <div class="field"><label>Doğum Tarihi</label><input type="date" id="sf-birth" value="${esc(s.birth_date || '')}"></div>
       <div class="field"><label>Doğum Yeri</label><input id="sf-bplace" value="${esc(s.birth_place || '')}"></div>
       <div class="field"><label>Cinsiyet</label><select id="sf-gender">
@@ -697,9 +737,16 @@ function studentFormFields(s = {}, opts = {}) {
       <div class="field"><label>Şube</label><input id="sf-section" value="${esc(s.section || '')}" maxlength="4"></div>`}
       <div class="field"><label>Durum</label><select id="sf-status">
         ${META.student_statuses.map(x => `<option value="${x.value}" ${(s.status || 'AKTIF') === x.value ? 'selected' : ''}>${x.label}</option>`).join('')}</select></div>
-      <div class="field"><label>İl</label><input id="sf-city" value="${esc(s.city || 'İstanbul')}"></div>
-      <div class="field"><label>İlçe</label><input id="sf-district" value="${esc(s.district || '')}"></div>
-      <div class="field full"><label>Adres</label><input id="sf-address" value="${esc(s.address || '')}"></div>
+      <div class="field"><label>İl</label>
+        <select id="sf-adr-city" style="display:none"></select>
+        <input id="sf-city" value="${esc(s.city || 'İstanbul')}"></div>
+      <div class="field"><label>İlçe</label>
+        <select id="sf-adr-district" style="display:none" disabled></select>
+        <input id="sf-district" value="${esc(s.district || '')}"></div>
+      <div class="field"><label>Mahalle</label>
+        <select id="sf-adr-hood" style="display:none" disabled></select>
+        <input id="sf-hood" value="${esc(s.neighborhood || '')}" placeholder="Mahalle adı"></div>
+      <div class="field full"><label>Adres (cadde/sokak/no)</label><input id="sf-address" value="${esc(s.address || '')}"></div>
       <div class="field"><label>Önceki Okul İli</label><select id="sf-psc-city"><option value="">Yükleniyor…</option></select></div>
       <div class="field"><label>Önceki Okul İlçesi</label><select id="sf-psc-district" disabled><option value="">Önce il seçin</option></select></div>
       <div class="field"><label>Önceki Okul</label><select id="sf-psc-school" disabled><option value="">Önce ilçe seçin</option></select></div>
@@ -708,6 +755,89 @@ function studentFormFields(s = {}, opts = {}) {
       <div class="field full"><label>Sağlık Notları</label><input id="sf-health" value="${esc(s.health_notes || '')}"></div>
       <div class="field full"><label>Notlar</label><input id="sf-notes" value="${esc(s.notes || '')}"></div>
     </div>`;
+}
+
+/**
+ * Adres il → ilçe → mahalle zinciri: katalog doluysa metin kutuları yerine
+ * seçim listeleri gösterilir; "Listede yok" seçilirse elle giriş açılır.
+ */
+async function initAddressPicker(s = {}) {
+  const citySel = $('#sf-adr-city');
+  if (!citySel) return;
+  const distSel = $('#sf-adr-district');
+  const hoodSel = $('#sf-adr-hood');
+  const cityTxt = $('#sf-city'), distTxt = $('#sf-district'), hoodTxt = $('#sf-hood');
+  const MANUAL = '__manual';
+  const fetchHoods = (city, district) => {
+    const qs = new URLSearchParams();
+    if (city) qs.set('city', city);
+    if (district) qs.set('district', district);
+    return api('/parameters/neighborhoods?' + qs);
+  };
+  const showManual = (sel, txt) => {
+    const manual = sel.value === MANUAL;
+    txt.style.display = manual ? '' : 'none';
+    if (!manual) txt.value = sel.value || '';
+  };
+  try {
+    const d0 = await fetchHoods();
+    if (!$('#sf-adr-city')) return;
+    if (!d0.cities.length) return; // katalog boş: metin girişleri kalsın
+    // Selectleri görünür yap, metinleri gizle
+    for (const [sel, txt] of [[citySel, cityTxt], [distSel, distTxt], [hoodSel, hoodTxt]]) {
+      sel.style.display = ''; txt.style.display = 'none';
+    }
+    const opt = list => '<option value="">Seçiniz</option>' +
+      list.map(x => `<option>${esc(x)}</option>`).join('') +
+      `<option value="${MANUAL}">Listede yok — elle gir</option>`;
+    citySel.innerHTML = opt(d0.cities);
+    const fillDistricts = async () => {
+      showManual(citySel, cityTxt);
+      if (!citySel.value || citySel.value === MANUAL) {
+        distSel.innerHTML = opt([]); distSel.disabled = citySel.value !== MANUAL;
+        hoodSel.innerHTML = opt([]); hoodSel.disabled = true;
+        if (citySel.value === MANUAL) { distSel.value = MANUAL; hoodSel.value = MANUAL; showManual(distSel, distTxt); showManual(hoodSel, hoodTxt); }
+        return;
+      }
+      const d = await fetchHoods(citySel.value);
+      distSel.innerHTML = opt(d.districts); distSel.disabled = false;
+      hoodSel.innerHTML = opt([]); hoodSel.disabled = true;
+      showManual(distSel, distTxt); showManual(hoodSel, hoodTxt);
+    };
+    const fillHoods = async () => {
+      showManual(distSel, distTxt);
+      if (!distSel.value || distSel.value === MANUAL) {
+        hoodSel.innerHTML = opt([]); hoodSel.disabled = distSel.value !== MANUAL;
+        if (distSel.value === MANUAL) { hoodSel.value = MANUAL; showManual(hoodSel, hoodTxt); }
+        return;
+      }
+      const d = await fetchHoods(citySel.value, distSel.value);
+      hoodSel.innerHTML = opt(d.neighborhoods.map(x => x.name)); hoodSel.disabled = false;
+      showManual(hoodSel, hoodTxt);
+    };
+    citySel.onchange = fillDistricts;
+    distSel.onchange = fillHoods;
+    hoodSel.onchange = () => showManual(hoodSel, hoodTxt);
+    // Kayıtlı değerleri geri yükle
+    if (s.city && d0.cities.includes(s.city)) {
+      citySel.value = s.city;
+      await fillDistricts();
+      const dists = [...distSel.options].map(o => o.value);
+      if (s.district && dists.includes(s.district)) {
+        distSel.value = s.district;
+        await fillHoods();
+        const hoods = [...hoodSel.options].map(o => o.value);
+        if (s.neighborhood && hoods.includes(s.neighborhood)) hoodSel.value = s.neighborhood;
+        else if (s.neighborhood) { hoodSel.value = '__manual'; showManual(hoodSel, hoodTxt); hoodTxt.value = s.neighborhood; }
+      } else if (s.district) {
+        distSel.value = '__manual'; showManual(distSel, distTxt); distTxt.value = s.district;
+        hoodSel.value = '__manual'; hoodSel.disabled = false; showManual(hoodSel, hoodTxt); hoodTxt.value = s.neighborhood || '';
+      }
+    } else if (s.city) {
+      citySel.value = '__manual'; await fillDistricts();
+      cityTxt.value = s.city; distTxt.value = s.district || ''; hoodTxt.value = s.neighborhood || '';
+    }
+  } catch { /* katalog erişilemedi: metin girişleri kalsın */ }
 }
 
 /** Önceki okul il → ilçe → okul zincirini bağlar; kayıtlı seçimi geri yükler. */
@@ -775,8 +905,9 @@ function readStudentForm() {
     campus_id: isHQ() ? Number($('#sf-campus').value) : USER.campus.id,
     previous_school_id: schoolId,
     status: $('#sf-status').value,
-    city: $('#sf-city').value,
-    district: $('#sf-district').value,
+    city: (() => { const s2 = $('#sf-adr-city'); return s2 && s2.style.display !== 'none' && s2.value && s2.value !== '__manual' ? s2.value : $('#sf-city').value; })(),
+    district: (() => { const s2 = $('#sf-adr-district'); return s2 && s2.style.display !== 'none' && s2.value && s2.value !== '__manual' ? s2.value : $('#sf-district').value; })(),
+    neighborhood: (() => { const s2 = $('#sf-adr-hood'); return s2 && s2.style.display !== 'none' && s2.value && s2.value !== '__manual' ? s2.value : ($('#sf-hood') ? $('#sf-hood').value : ''); })(),
     address: $('#sf-address').value,
     health_notes: $('#sf-health').value,
     notes: $('#sf-notes').value,
@@ -791,6 +922,7 @@ function studentFormModal(s, onSaved) {
     footHtml: `<button class="btn secondary" data-x>Vazgeç</button><button class="btn" id="sf-save">Kaydet</button>`,
     onOpen(area) {
       initSchoolPicker(s);
+      initAddressPicker(s);
       area.querySelector('[data-x]').onclick = closeModal;
       area.querySelector('#sf-save').onclick = async () => {
         try {
@@ -809,9 +941,9 @@ function parentFormModal(studentId, p, onSaved) {
       <div class="field"><label>Yakınlık *</label><select id="pf-rel">
         ${[['ANNE', 'Anne'], ['BABA', 'Baba'], ['VASI', 'Vasi'], ['DIGER', 'Diğer']].map(([v, l]) => `<option value="${v}" ${p?.relation === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="field"><label>Ad Soyad *</label><input id="pf-name" value="${esc(p?.full_name || '')}"></div>
-      <div class="field"><label>TC Kimlik No</label><input id="pf-tc" maxlength="11" value="${esc(p?.tc_no || '')}"></div>
-      <div class="field"><label>Telefon</label><input id="pf-phone" value="${esc(p?.phone || '')}"></div>
-      <div class="field"><label>Telefon 2</label><input id="pf-phone2" value="${esc(p?.phone2 || '')}"></div>
+      <div class="field"><label>TC Kimlik No</label><input id="pf-tc" data-tc maxlength="11" value="${esc(p?.tc_no || '')}"></div>
+      <div class="field"><label>Telefon</label><input id="pf-phone" data-phone value="${esc(p?.phone || '')}"></div>
+      <div class="field"><label>Telefon 2</label><input id="pf-phone2" data-phone value="${esc(p?.phone2 || '')}"></div>
       <div class="field"><label>E-posta</label><input id="pf-email" value="${esc(p?.email || '')}"></div>
       <div class="field"><label>Meslek</label><input id="pf-occ" value="${esc(p?.occupation || '')}"></div>
       <div class="field"><label>İş Yeri</label><input id="pf-work" value="${esc(p?.workplace || '')}"></div>
@@ -1051,9 +1183,9 @@ async function pageNewEnrollment() {
             <option value="ANNE">Anne</option><option value="BABA">Baba</option>
             <option value="VASI">Vasi</option><option value="DIGER">Diğer</option></select></div>
           <div class="field"><label>Ad Soyad *</label><input id="np-name"></div>
-          <div class="field"><label>Telefon *</label><input id="np-phone"></div>
+          <div class="field"><label>Telefon *</label><input id="np-phone" data-phone></div>
           <div class="field"><label>E-posta</label><input id="np-email"></div>
-          <div class="field"><label>TC Kimlik No</label><input id="np-tc" maxlength="11"></div>
+          <div class="field"><label>TC Kimlik No</label><input id="np-tc" data-tc maxlength="11"></div>
           <div class="field"><label>Meslek</label><input id="np-occ"></div>
         </div>
         <div class="section-title">Evrak Listesi <span class="muted" style="font-weight:400; text-transform:none">· teslim alınanları işaretleyin, eksikler sonradan tamamlanabilir</span></div>
@@ -1098,8 +1230,8 @@ async function pageNewEnrollment() {
             <input id="ne-payer" style="flex:1">
             <button class="btn sm secondary" id="ne-payer-pick" type="button" title="Birincil veli bilgilerinden doldur">👤 Veliden Al</button>
           </div></div>
-        <div class="field"><label>Ödeme Sorumlusu Telefon</label><input id="ne-payer-phone"></div>
-        <div class="field"><label>Ödeme Sorumlusu TC</label><input id="ne-payer-tc" maxlength="11"></div>
+        <div class="field"><label>Ödeme Sorumlusu Telefon</label><input id="ne-payer-phone" data-phone></div>
+        <div class="field"><label>Ödeme Sorumlusu TC</label><input id="ne-payer-tc" data-tc maxlength="11"></div>
         <div class="field full"><label>Notlar</label><input id="ne-notes"></div>
       </div>
       <div class="flex mt">
@@ -1411,6 +1543,7 @@ async function pageNewEnrollment() {
     } catch {}
   })();
   initSchoolPicker({});
+  initAddressPicker({});
 
   // Ödeme sorumlusu: veliden al
   $('#ne-payer-pick').onclick = async () => {
@@ -1871,6 +2004,27 @@ async function pageParameters() {
       </div>
       <div id="pr-schools-table"><div class="muted" style="padding:8px">Aramak için yazın veya tümünü görmek için boş bırakın.</div></div>
 
+      <div class="section-title mt">Adres Kataloğu (İl / İlçe / Mahalle)</div>
+      <p class="muted" style="font-size:12.5px; margin-bottom:10px">
+        Öğrenci formundaki adres alanları bu katalogdan seçilir (il → ilçe → mahalle).
+        Excel sütunları: <b>A: İl, B: İlçe, C: Mahalle</b> — ilk satır başlık olabilir, mevcut kayıtlar atlanır.</p>
+      ${editable ? `
+      <div class="toolbar">
+        <div class="field"><label>Excel'den Yükle (.xlsx)</label><input type="file" id="pr-hood-file" accept=".xlsx"></div>
+        <button class="btn sm" id="pr-hood-import">⬆️ Yükle</button>
+        <span class="spacer"></span>
+      </div>
+      <div class="toolbar">
+        <div class="field"><label>İl</label><input id="pr-hood-city" placeholder="İstanbul" style="max-width:140px"></div>
+        <div class="field"><label>İlçe</label><input id="pr-hood-district" placeholder="Esenyurt" style="max-width:140px"></div>
+        <div class="field grow"><label>Mahalle</label><input id="pr-hood-name" placeholder="... Mahallesi"></div>
+        <button class="btn sm secondary" id="pr-add-hood">+ Mahalle Ekle</button>
+      </div>` : ''}
+      <div class="toolbar">
+        <div class="field grow"><label>Katalogda ara</label><input id="pr-hood-search" placeholder="Mahalle adı yazın…"></div>
+      </div>
+      <div id="pr-hoods-table"></div>
+
       <div class="section-title mt">Kampüs İndirim Sınırları</div>
       <p class="muted" style="font-size:12.5px; margin-bottom:10px">
         Kayıt sırasında bu sınırların üzerinde indirim yapılamaz. Boş bırakılan sınır uygulanmaz.</p>
@@ -1973,6 +2127,31 @@ async function pageParameters() {
         loadSchools();
       } catch (e) { toast(e.message, 'error'); }
     };
+    $('#pr-hood-import').onclick = async () => {
+      const file = $('#pr-hood-file').files[0];
+      if (!file) return toast('Önce bir .xlsx dosyası seçin.', 'error');
+      try {
+        const buf = await file.arrayBuffer();
+        const res = await fetch('/api/parameters/neighborhoods/import', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/octet-stream' },
+          body: buf,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Yükleme başarısız.');
+        toast(`Mahalle yükleme tamam: ${data.added} eklendi, ${data.skipped} zaten vardı, ${data.invalid} satır atlandı.`, 'success');
+        loadHoods();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+    $('#pr-add-hood').onclick = async () => {
+      try {
+        await api('/parameters/neighborhoods', {
+          method: 'POST',
+          body: { city: $('#pr-hood-city').value, district: $('#pr-hood-district').value, name: $('#pr-hood-name').value },
+        });
+        toast('Mahalle eklendi.', 'success'); $('#pr-hood-name').value = ''; loadHoods();
+      } catch (e) { toast(e.message, 'error'); }
+    };
     $('#pr-add-school').onclick = async () => {
       try {
         await api('/parameters/schools', {
@@ -2045,6 +2224,38 @@ async function pageParameters() {
       });
     } catch (e) { toast(e.message, 'error'); }
   }
+  // ---- Mahalle kataloğu listesi ----
+  async function loadHoods() {
+    const wrap = $('#pr-hoods-table');
+    if (!wrap) return;
+    try {
+      const qs = new URLSearchParams({ include_passive: 1 });
+      const search = $('#pr-hood-search')?.value.trim();
+      if (search) qs.set('search', search);
+      const d = await api('/parameters/neighborhoods?' + qs);
+      const editable = can('settings.manage');
+      wrap.innerHTML = `
+        <p class="muted" style="font-size:12px; margin-bottom:6px">Katalogda ${d.neighborhoods.length >= 500 ? '500+' : d.neighborhoods.length} mahalle gösteriliyor · ${d.cities.length} il</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>İl</th><th>İlçe</th><th>Mahalle</th><th>Durum</th>${editable ? '<th></th>' : ''}</tr></thead>
+          <tbody>${d.neighborhoods.slice(0, 100).map(x => `
+            <tr style="${!x.active ? 'opacity:.55' : ''}">
+              <td>${esc(x.city)}</td><td>${esc(x.district)}</td><td><b>${esc(x.name)}</b></td>
+              <td>${x.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}</td>
+              ${editable ? `<td class="right"><button class="btn sm secondary" data-hood-tgl="${x.id}" data-active="${x.active}">
+                ${x.active ? 'Pasifleştir' : 'Aktifleştir'}</button></td>` : ''}
+            </tr>`).join('') || '<tr><td colspan="5" class="empty">Katalog boş — Excel ile yükleyin veya elle ekleyin</td></tr>'}
+          </tbody></table></div>`;
+      wrap.querySelectorAll('[data-hood-tgl]').forEach(b => b.onclick = async () => {
+        try {
+          await api('/parameters/neighborhoods/' + b.dataset.hoodTgl, {
+            method: 'PUT', body: { active: b.dataset.active !== '1' },
+          });
+          loadHoods();
+        } catch (e) { toast(e.message, 'error'); }
+      });
+    } catch (e) { toast(e.message, 'error'); }
+  }
   if (!window.__schSearchBound) {
     window.__schSearchBound = true;
     let schDebounce;
@@ -2052,6 +2263,10 @@ async function pageParameters() {
       if (e.target && e.target.id === 'pr-sch-search') {
         clearTimeout(schDebounce);
         schDebounce = setTimeout(loadSchools, 350);
+      }
+      if (e.target && e.target.id === 'pr-hood-search') {
+        clearTimeout(schDebounce);
+        schDebounce = setTimeout(loadHoods, 350);
       }
     });
   }
@@ -2061,7 +2276,7 @@ async function pageParameters() {
     if (el) el.onchange = load;
   });
   const origLoad = load;
-  load = async function () { await origLoad(); loadDocs(); loadSchools(); };
+  load = async function () { await origLoad(); loadDocs(); loadSchools(); loadHoods(); };
   const backupBtn = $('#pr-backup');
   if (backupBtn) backupBtn.onclick = async () => {
     backupBtn.disabled = true;

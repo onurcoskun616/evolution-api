@@ -382,6 +382,97 @@ router.post('/schools/import',
     }
   });
 
+// ---- Adres kataloğu: il / ilçe / mahalle ----
+router.get('/neighborhoods', (req, res) => {
+  const q = req.query || {};
+  const where = ['1=1'];
+  const params = {};
+  if (q.city) { where.push('city = @city'); params.city = String(q.city).trim(); }
+  if (q.district) { where.push('district = @district'); params.district = String(q.district).trim(); }
+  if (q.search) { where.push('name LIKE @search'); params.search = `%${String(q.search).trim()}%`; }
+  if (!q.include_passive) where.push('active = 1');
+  const rows = db.prepare(`
+    SELECT * FROM neighborhoods WHERE ${where.join(' AND ')} ORDER BY city, district, name LIMIT 500`).all(params);
+  const cities = db.prepare('SELECT DISTINCT city FROM neighborhoods WHERE active = 1 ORDER BY city').all().map(r => r.city);
+  const districts = q.city
+    ? db.prepare('SELECT DISTINCT district FROM neighborhoods WHERE city = ? AND active = 1 ORDER BY district')
+        .all(String(q.city).trim()).map(r => r.district)
+    : [];
+  res.json({ neighborhoods: rows, cities, districts });
+});
+
+router.post('/neighborhoods', requirePermission('settings.manage'), (req, res) => {
+  const b = req.body || {};
+  const city = String(b.city || '').trim();
+  const district = String(b.district || '').trim();
+  const name = String(b.name || '').trim();
+  if (!city || !district || !name) {
+    return res.status(400).json({ error: 'İl, ilçe ve mahalle adı zorunludur.' });
+  }
+  if (db.prepare('SELECT id FROM neighborhoods WHERE city = ? AND district = ? AND name = ?').get(city, district, name)) {
+    return res.status(400).json({ error: 'Bu mahalle zaten kayıtlı.' });
+  }
+  const info = db.prepare('INSERT INTO neighborhoods (city, district, name) VALUES (?, ?, ?)')
+    .run(city, district, name);
+  audit(req.user.id, 'CREATE', 'neighborhood', info.lastInsertRowid, `${city}/${district}/${name}`);
+  res.json({ id: info.lastInsertRowid });
+});
+
+router.put('/neighborhoods/:id', requirePermission('settings.manage'), (req, res) => {
+  const hood = db.prepare('SELECT * FROM neighborhoods WHERE id = ?').get(req.params.id);
+  if (!hood) return res.status(404).json({ error: 'Mahalle bulunamadı.' });
+  const b = req.body || {};
+  const city = b.city !== undefined ? String(b.city).trim() : hood.city;
+  const district = b.district !== undefined ? String(b.district).trim() : hood.district;
+  const name = b.name !== undefined ? String(b.name).trim() : hood.name;
+  if (!city || !district || !name) return res.status(400).json({ error: 'İl, ilçe ve mahalle boş olamaz.' });
+  const dup = db.prepare('SELECT id FROM neighborhoods WHERE city = ? AND district = ? AND name = ? AND id != ?')
+    .get(city, district, name, hood.id);
+  if (dup) return res.status(400).json({ error: 'Bu mahalle zaten kayıtlı.' });
+  db.prepare('UPDATE neighborhoods SET city = ?, district = ?, name = ?, active = ? WHERE id = ?')
+    .run(city, district, name, b.active !== undefined ? (b.active ? 1 : 0) : hood.active, hood.id);
+  audit(req.user.id, 'UPDATE', 'neighborhood', hood.id, name);
+  res.json({ ok: true });
+});
+
+/**
+ * Excel ile mahalle yükleme. Sütunlar: A: İl, B: İlçe, C: Mahalle
+ * (ilk satır başlık olabilir; mevcut kayıtlar atlanır)
+ */
+router.post('/neighborhoods/import',
+  express.raw({ type: () => true, limit: '20mb' }),
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    try {
+      if (!req.body || !req.body.length) return res.status(400).json({ error: 'Dosya alınamadı.' });
+      const ExcelJS = require('exceljs');
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(req.body);
+      const ws = wb.worksheets[0];
+      if (!ws) return res.status(400).json({ error: 'Excel dosyasında sayfa bulunamadı.' });
+      let added = 0, skipped = 0, invalid = 0;
+      const exists = db.prepare('SELECT id FROM neighborhoods WHERE city = ? AND district = ? AND name = ?');
+      const ins = db.prepare('INSERT INTO neighborhoods (city, district, name) VALUES (?, ?, ?)');
+      const cellText = c => String(c?.value?.result ?? c?.value ?? '').trim();
+      db.transaction(() => {
+        ws.eachRow(row => {
+          const city = cellText(row.getCell(1));
+          const district = cellText(row.getCell(2));
+          const name = cellText(row.getCell(3));
+          if (!city || !district || !name) { invalid++; return; }
+          if (/^(İL|IL)$/i.test(city)) return; // başlık satırı
+          if (exists.get(city, district, name)) { skipped++; return; }
+          ins.run(city, district, name);
+          added++;
+        });
+      })();
+      audit(req.user.id, 'IMPORT', 'neighborhood', null, `eklendi=${added} atlandı=${skipped}`);
+      res.json({ added, skipped, invalid });
+    } catch (e) {
+      res.status(400).json({ error: 'Excel dosyası okunamadı: ' + e.message });
+    }
+  });
+
 module.exports = router;
 module.exports.getParams = getParams;
 module.exports.GRADES = GRADES;

@@ -1,6 +1,7 @@
 const express = require('express');
 const { db, audit } = require('../db');
 const { requirePermission } = require('../auth');
+const { phoneField } = require('../validate');
 
 const router = express.Router();
 
@@ -16,6 +17,11 @@ router.post('/', requirePermission('campus.manage'), (req, res) => {
   if (db.prepare('SELECT id FROM campuses WHERE code = ?').get(String(b.code).trim().toUpperCase())) {
     return res.status(400).json({ error: 'Bu kampüs kodu zaten kullanılıyor.' });
   }
+  if (b.phone !== undefined) {
+    const r = phoneField(b.phone, 'Kampüs');
+    if (r.error) return res.status(400).json({ error: r.error });
+    b.phone = r.value;
+  }
   const info = db.prepare(`
     INSERT INTO campuses (code, name, address, phone, manager_name)
     VALUES (?, ?, ?, ?, ?)`)
@@ -29,6 +35,11 @@ router.put('/:id', requirePermission('campus.manage'), (req, res) => {
   const campus = db.prepare('SELECT * FROM campuses WHERE id = ?').get(req.params.id);
   if (!campus) return res.status(404).json({ error: 'Kampüs bulunamadı.' });
   const b = req.body || {};
+  if (b.phone !== undefined) {
+    const r = phoneField(b.phone, 'Kampüs');
+    if (r.error) return res.status(400).json({ error: r.error });
+    b.phone = r.value;
+  }
   db.prepare(`
     UPDATE campuses SET name = ?, address = ?, phone = ?, manager_name = ?, active = ? WHERE id = ?`)
     .run(
