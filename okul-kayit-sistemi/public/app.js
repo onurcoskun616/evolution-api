@@ -21,6 +21,10 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const METHOD_LABELS = { NAKIT: 'Nakit', KREDI_KARTI: 'Kredi Kartı', KMH: 'KMH', SENET: 'Senet', HAVALE_EFT: 'Havale/EFT', CEK: 'Çek', MAIL_ORDER: 'Mail Order' };
+const RELATION_LABELS = {
+  ANNE: 'Anne', BABA: 'Baba', VASI: 'Vasi', ABI: 'Abi', ABLA: 'Abla', DEDE: 'Dede',
+  NINE: 'Nine', AMCA: 'Amca', HALA: 'Hala', DAYI: 'Dayı', TEYZE: 'Teyze', KUZEN: 'Kuzen', DIGER: 'Diğer',
+};
 const STATUS_BADGES = {
   AKTIF: ['Aktif', 'green'], PASIF: ['Pasif', 'gray'], MEZUN: ['Mezun', 'blue'],
   KAYIT_SILDI: ['Kayıt Sildi', 'red'], ADAY: ['Aday', 'yellow'],
@@ -555,8 +559,9 @@ async function pageStudentDetail(id) {
         ${d.parents.map(p => `
           <div class="card" style="margin-bottom:10px; padding:12px">
             <div class="flex"><b>${esc(p.full_name)}</b>
-              <span class="badge ${p.relation === 'ANNE' ? 'blue' : p.relation === 'BABA' ? 'green' : 'gray'}">${p.relation === 'ANNE' ? 'Anne' : p.relation === 'BABA' ? 'Baba' : p.relation === 'VASI' ? 'Vasi' : 'Diğer'}</span>
-              ${p.is_primary ? '<span class="badge yellow">Birincil İletişim</span>' : ''}
+              <span class="badge ${p.relation === 'ANNE' ? 'blue' : p.relation === 'BABA' ? 'green' : 'gray'}">${RELATION_LABELS[p.relation] || p.relation}</span>
+              ${p.is_guardian ? '<span class="badge yellow">Veli</span>' : ''}
+              ${p.is_payer ? '<span class="badge red" style="background:#dbe8fb; color:#1d4f91">Ödeme Sorumlusu</span>' : ''}
               <span class="spacer"></span>
               ${can('student.edit') ? `<button class="btn sm secondary" data-edit-parent="${p.id}">Düzenle</button>` : ''}
             </div>
@@ -939,7 +944,7 @@ function parentFormModal(studentId, p, onSaved) {
   openModal(p ? 'Veli Bilgilerini Düzenle' : 'Veli Ekle', `
     <div class="form-grid">
       <div class="field"><label>Yakınlık *</label><select id="pf-rel">
-        ${[['ANNE', 'Anne'], ['BABA', 'Baba'], ['VASI', 'Vasi'], ['DIGER', 'Diğer']].map(([v, l]) => `<option value="${v}" ${p?.relation === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        ${Object.entries(RELATION_LABELS).map(([v, l]) => `<option value="${v}" ${p?.relation === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="field"><label>Ad Soyad *</label><input id="pf-name" value="${esc(p?.full_name || '')}"></div>
       <div class="field"><label>TC Kimlik No</label><input id="pf-tc" data-tc maxlength="11" value="${esc(p?.tc_no || '')}"></div>
       <div class="field"><label>Telefon</label><input id="pf-phone" data-phone value="${esc(p?.phone || '')}"></div>
@@ -949,9 +954,12 @@ function parentFormModal(studentId, p, onSaved) {
       <div class="field"><label>İş Yeri</label><input id="pf-work" value="${esc(p?.workplace || '')}"></div>
       <div class="field"><label>Eğitim Durumu</label><input id="pf-edu" value="${esc(p?.education || '')}"></div>
       <div class="field full"><label>Adres</label><input id="pf-address" value="${esc(p?.address || '')}"></div>
-      <div class="field"><label>Birincil İletişim mi?</label><select id="pf-primary">
-        <option value="0" ${!p?.is_primary ? 'selected' : ''}>Hayır</option>
-        <option value="1" ${p?.is_primary ? 'selected' : ''}>Evet</option></select></div>
+      <div class="field"><label>Velidir</label><select id="pf-guardian">
+        <option value="0" ${!p?.is_guardian ? 'selected' : ''}>Hayır</option>
+        <option value="1" ${p?.is_guardian ? 'selected' : ''}>Evet (diğerlerinden kalkar)</option></select></div>
+      <div class="field"><label>Ödeme Sorumlusudur</label><select id="pf-payer">
+        <option value="0" ${!p?.is_payer ? 'selected' : ''}>Hayır</option>
+        <option value="1" ${p?.is_payer ? 'selected' : ''}>Evet (diğerlerinden kalkar)</option></select></div>
     </div>`, {
     footHtml: `${p ? '<button class="btn danger" id="pf-del" style="margin-right:auto">Sil</button>' : ''}
       <button class="btn secondary" data-x>Vazgeç</button><button class="btn" id="pf-save">Kaydet</button>`,
@@ -963,7 +971,8 @@ function parentFormModal(studentId, p, onSaved) {
           tc_no: $('#pf-tc').value, phone: $('#pf-phone').value, phone2: $('#pf-phone2').value,
           email: $('#pf-email').value, occupation: $('#pf-occ').value, workplace: $('#pf-work').value,
           education: $('#pf-edu').value, address: $('#pf-address').value,
-          is_primary: $('#pf-primary').value === '1',
+          is_guardian: $('#pf-guardian').value === '1',
+          is_payer: $('#pf-payer').value === '1',
         };
         try {
           if (p) await api(`/students/${studentId}/parents/${p.id}`, { method: 'PUT', body });
@@ -1177,16 +1186,43 @@ async function pageNewEnrollment() {
           <div class="field"><label>Şube * <span class="muted" style="font-weight:400">(azami 30)</span></label>
             <select id="ne1-section"><option value="">Önce bölüm seçin</option></select></div>
         </div>
-        <div class="section-title">Veli Bilgileri (Birincil)</div>
+        <div class="section-title">Anne Bilgileri *</div>
         <div class="form-grid">
-          <div class="field"><label>Yakınlık *</label><select id="np-rel">
+          <div class="field"><label>Ad Soyad *</label><input id="anne-name"></div>
+          <div class="field"><label>TC Kimlik No</label><input id="anne-tc" data-tc maxlength="11"></div>
+          <div class="field"><label>Cep Tel</label><input id="anne-phone" data-phone></div>
+          <div class="field"><label>E-posta</label><input id="anne-email"></div>
+          <div class="field"><label>Meslek</label><input id="anne-occ"></div>
+        </div>
+        <div class="section-title">Baba Bilgileri *</div>
+        <div class="form-grid">
+          <div class="field"><label>Ad Soyad *</label><input id="baba-name"></div>
+          <div class="field"><label>TC Kimlik No</label><input id="baba-tc" data-tc maxlength="11"></div>
+          <div class="field"><label>Cep Tel</label><input id="baba-phone" data-phone></div>
+          <div class="field"><label>E-posta</label><input id="baba-email"></div>
+          <div class="field"><label>Meslek</label><input id="baba-occ"></div>
+        </div>
+        <div class="section-title">Veli ve Ödeme Sorumlusu Seçimi</div>
+        <div class="form-grid">
+          <div class="field"><label>Veli Kimdir? *</label><select id="fam-guardian">
             <option value="ANNE">Anne</option><option value="BABA">Baba</option>
-            <option value="VASI">Vasi</option><option value="DIGER">Diğer</option></select></div>
-          <div class="field"><label>Ad Soyad *</label><input id="np-name"></div>
-          <div class="field"><label>Telefon *</label><input id="np-phone" data-phone></div>
-          <div class="field"><label>E-posta</label><input id="np-email"></div>
-          <div class="field"><label>TC Kimlik No</label><input id="np-tc" data-tc maxlength="11"></div>
-          <div class="field"><label>Meslek</label><input id="np-occ"></div>
+            <option value="DIGER">Başka Kişi (aşağıda)</option></select></div>
+          <div class="field"><label>Ödeme Sorumlusu Kimdir? *</label><select id="fam-payer">
+            <option value="ANNE">Anne</option><option value="BABA">Baba</option>
+            <option value="DIGER">Başka Kişi (aşağıda)</option></select></div>
+        </div>
+        <div id="other-person" style="display:none">
+          <div class="section-title">Diğer Şahıs Bilgileri</div>
+          <div class="form-grid">
+            <div class="field"><label>Yakınlık *</label><select id="op-rel">
+              ${['ABI', 'ABLA', 'DEDE', 'NINE', 'AMCA', 'HALA', 'DAYI', 'TEYZE', 'KUZEN', 'VASI', 'DIGER']
+                .map(r => `<option value="${r}">${RELATION_LABELS[r]}</option>`).join('')}</select></div>
+            <div class="field"><label>Ad Soyad *</label><input id="op-name"></div>
+            <div class="field"><label>TC Kimlik No</label><input id="op-tc" data-tc maxlength="11"></div>
+            <div class="field"><label>Cep Tel *</label><input id="op-phone" data-phone></div>
+            <div class="field"><label>E-posta</label><input id="op-email"></div>
+            <div class="field"><label>Meslek</label><input id="op-occ"></div>
+          </div>
         </div>
         <div class="section-title">Evrak Listesi <span class="muted" style="font-weight:400; text-transform:none">· teslim alınanları işaretleyin, eksikler sonradan tamamlanabilir</span></div>
         <div class="form-grid" id="sf-docs" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
@@ -1219,12 +1255,12 @@ async function pageNewEnrollment() {
           <select id="ne-section"><option value="">Önce bölüm seçin</option></select></div>
         <div class="field"><label>Kayıt Tarihi</label><input type="date" id="ne-date" value="${todayStr()}"></div>
         <div class="field"><label>İndirim Gerekçesi</label><input id="ne-discount-reason" placeholder="Kardeş, erken kayıt, burs…"></div>
+        <div class="field"><label>Varsayılan Ödeme Türü</label><select id="ne-method">
+          ${META.payment_methods.map(m => `<option value="${m.value}">${m.label}</option>`).join('')}</select></div>
         <div class="field"><label>Peşinat (TL)</label><input type="number" step="0.01" min="0" id="ne-down" value="0"></div>
         <div class="field"><label>Taksit Sayısı</label><select id="ne-count">
           ${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(n => `<option value="${n}" ${n === 9 ? 'selected' : ''}>${n === 0 ? 'Peşin (taksitsiz)' : n + ' taksit'}</option>`).join('')}</select></div>
         <div class="field"><label>İlk Taksit Tarihi</label><input type="date" id="ne-first-due"></div>
-        <div class="field"><label>Varsayılan Ödeme Türü</label><select id="ne-method">
-          ${META.payment_methods.map(m => `<option value="${m.value}">${m.label}</option>`).join('')}</select></div>
         <div class="field"><label>Ödeme Sorumlusu (Veli)</label>
           <div class="flex" style="gap:6px; flex-wrap:nowrap">
             <input id="ne-payer" style="flex:1">
@@ -1451,7 +1487,7 @@ async function pageNewEnrollment() {
       // Ödeme sorumlusu boşsa birincil veliden doldur
       if (!$('#ne-payer').value.trim()) {
         api('/students/' + selectedStudent.id).then(d => {
-          const p = d.parents.find(x => x.is_primary) || d.parents[0];
+          const p = d.parents.find(x => x.is_payer) || d.parents.find(x => x.is_primary) || d.parents[0];
           if (p && $('#ne-payer') && !$('#ne-payer').value.trim()) {
             $('#ne-payer').value = p.full_name;
             $('#ne-payer-phone').value = p.phone || '';
@@ -1545,34 +1581,58 @@ async function pageNewEnrollment() {
   initSchoolPicker({});
   initAddressPicker({});
 
-  // Ödeme sorumlusu: veliden al
+  // Diğer şahıs bloğu: veli/ödeme sorumlusu 'Başka Kişi' seçilirse açılır
+  const currentPayerFields = () => {
+    const sel = $('#fam-payer').value;
+    if (sel === 'ANNE') return { name: $('#anne-name').value.trim(), phone: $('#anne-phone').value, tc: $('#anne-tc').value };
+    if (sel === 'BABA') return { name: $('#baba-name').value.trim(), phone: $('#baba-phone').value, tc: $('#baba-tc').value };
+    return { name: $('#op-name').value.trim(), phone: $('#op-phone').value, tc: $('#op-tc').value };
+  };
+  const fillPayerFromFamily = force => {
+    if (mode !== 'new') return;
+    const p = currentPayerFields();
+    if (!p.name) return;
+    if (force || !$('#ne-payer').value.trim()) {
+      $('#ne-payer').value = p.name;
+      $('#ne-payer-phone').value = p.phone || '';
+      $('#ne-payer-tc').value = p.tc || '';
+    }
+  };
+  const syncOtherPerson = () => {
+    const show = $('#fam-guardian').value === 'DIGER' || $('#fam-payer').value === 'DIGER';
+    $('#other-person').style.display = show ? '' : 'none';
+  };
+  $('#fam-guardian').onchange = syncOtherPerson;
+  $('#fam-payer').onchange = () => { syncOtherPerson(); fillPayerFromFamily(true); };
+  for (const id of ['anne-name', 'baba-name', 'op-name', 'anne-phone', 'baba-phone', 'op-phone', 'anne-tc', 'baba-tc', 'op-tc']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.addEventListener('blur', () => {
+      const owner = id.startsWith('anne') ? 'ANNE' : id.startsWith('baba') ? 'BABA' : 'DIGER';
+      fillPayerFromFamily($('#fam-payer').value === owner);
+    });
+  }
+
+  // Ödeme sorumlusu: seçili kişiden doldur
   $('#ne-payer-pick').onclick = async () => {
     if (mode === 'new') {
-      const name = $('#np-name').value.trim();
-      if (!name) return toast('Önce 1. bölümde veli adını girin.', 'error');
-      $('#ne-payer').value = name;
-      $('#ne-payer-phone').value = $('#np-phone').value;
-      $('#ne-payer-tc').value = $('#np-tc').value;
-      toast('Ödeme sorumlusu veli bilgilerinden dolduruldu.', 'success');
+      const p = currentPayerFields();
+      if (!p.name) return toast('Önce 1. bölümde ödeme sorumlusu olarak seçtiğiniz kişinin adını girin.', 'error');
+      $('#ne-payer').value = p.name;
+      $('#ne-payer-phone').value = p.phone || '';
+      $('#ne-payer-tc').value = p.tc || '';
+      toast('Ödeme sorumlusu bilgileri dolduruldu.', 'success');
     } else {
       if (!selectedStudent) return toast('Önce bir öğrenci seçin.', 'error');
       try {
         const d = await api('/students/' + selectedStudent.id);
-        const p = d.parents.find(x => x.is_primary) || d.parents[0];
+        const p = d.parents.find(x => x.is_payer) || d.parents.find(x => x.is_primary) || d.parents[0];
         if (!p) return toast('Bu öğrencinin veli kaydı yok.', 'error');
         $('#ne-payer').value = p.full_name;
         $('#ne-payer-phone').value = p.phone || '';
         $('#ne-payer-tc').value = p.tc_no || '';
-        toast(`Ödeme sorumlusu: ${p.full_name} (${p.relation === 'ANNE' ? 'Anne' : p.relation === 'BABA' ? 'Baba' : 'Veli'})`, 'success');
+        toast(`Ödeme sorumlusu: ${p.full_name} (${RELATION_LABELS[p.relation] || 'Veli'})`, 'success');
       } catch (e) { toast(e.message, 'error'); }
-    }
-  };
-  // Yeni öğrenci modunda veli adı yazılınca ödeme sorumlusu boşsa otomatik doldur
-  $('#np-name').onblur = () => {
-    if (mode === 'new' && !$('#ne-payer').value.trim() && $('#np-name').value.trim()) {
-      $('#ne-payer').value = $('#np-name').value.trim();
-      $('#ne-payer-phone').value = $('#np-phone').value;
-      $('#ne-payer-tc').value = $('#np-tc').value;
     }
   };
 
@@ -1601,21 +1661,43 @@ async function pageNewEnrollment() {
         studentId = selectedStudent.id;
       } else {
         const body = readStudentForm();
-        body.parents = [{
-          relation: $('#np-rel').value, full_name: $('#np-name').value.trim(),
-          phone: $('#np-phone').value, email: $('#np-email').value,
-          tc_no: $('#np-tc').value, occupation: $('#np-occ').value, is_primary: true,
-        }];
+        const guardianSel = $('#fam-guardian').value;
+        const payerSel = $('#fam-payer').value;
+        const anne = {
+          relation: 'ANNE', full_name: $('#anne-name').value.trim(),
+          tc_no: $('#anne-tc').value, phone: $('#anne-phone').value,
+          email: $('#anne-email').value, occupation: $('#anne-occ').value,
+          is_guardian: guardianSel === 'ANNE', is_payer: payerSel === 'ANNE',
+        };
+        const baba = {
+          relation: 'BABA', full_name: $('#baba-name').value.trim(),
+          tc_no: $('#baba-tc').value, phone: $('#baba-phone').value,
+          email: $('#baba-email').value, occupation: $('#baba-occ').value,
+          is_guardian: guardianSel === 'BABA', is_payer: payerSel === 'BABA',
+        };
+        if (!anne.full_name) throw new Error('Anne ad soyad zorunludur.');
+        if (!baba.full_name) throw new Error('Baba ad soyad zorunludur.');
+        body.parents = [anne, baba];
+        if (guardianSel === 'DIGER' || payerSel === 'DIGER') {
+          const other = {
+            relation: $('#op-rel').value, full_name: $('#op-name').value.trim(),
+            tc_no: $('#op-tc').value, phone: $('#op-phone').value,
+            email: $('#op-email').value, occupation: $('#op-occ').value,
+            is_guardian: guardianSel === 'DIGER', is_payer: payerSel === 'DIGER',
+          };
+          if (!other.full_name || !other.phone) {
+            throw new Error('Diğer şahıs için ad soyad ve telefon zorunludur.');
+          }
+          body.parents.push(other);
+        }
         body.documents = [...document.querySelectorAll('#sf-docs [data-doc]:checked')]
           .map(cb => Number(cb.dataset.doc));
-        if (!body.parents[0].full_name || !body.parents[0].phone) {
-          throw new Error('Yeni öğrenci için veli adı ve telefonu zorunludur.');
-        }
-        // Ödeme sorumlusu boşsa birincil veliden doldur
-        if (!$('#ne-payer').value.trim()) {
-          $('#ne-payer').value = body.parents[0].full_name;
-          $('#ne-payer-phone').value = body.parents[0].phone;
-          $('#ne-payer-tc').value = body.parents[0].tc_no || '';
+        // Ödeme sorumlusu alanları HER ZAMAN seçilen kişiden dolar (seçim belirleyicidir)
+        const payerP = body.parents.find(x => x.is_payer);
+        if (payerP) {
+          $('#ne-payer').value = payerP.full_name;
+          $('#ne-payer-phone').value = payerP.phone || '';
+          $('#ne-payer-tc').value = payerP.tc_no || '';
         }
         const created = await api('/students', { method: 'POST', body });
         studentId = created.id;

@@ -201,8 +201,9 @@ const insStudent = db.prepare(`
     blood_type, campus_id, department_id, grade, section, address, city, district, neighborhood, status, created_by)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 const insParent = db.prepare(`
-  INSERT INTO parents (student_id, relation, full_name, tc_no, phone, email, occupation, workplace, address, is_primary)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  INSERT INTO parents (student_id, relation, full_name, tc_no, phone, email, occupation, workplace, address,
+    is_primary, is_guardian, is_payer)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 const insEnrollment = db.prepare(`
   INSERT INTO enrollments (student_id, academic_year_id, campus_id, enrollment_date, enrollment_type,
     grade, department_id, section, list_fee, discount_rate, discount_amount, discount_reason, net_fee, down_payment,
@@ -349,10 +350,10 @@ const seedAll = db.transaction(() => {
       const fatherPhone = fakePhone();
       insParent.run(sid, 'ANNE', motherName, fakeTc(), motherPhone,
         `${first.toLowerCase()}.anne${counter}@example.com`.replace(/[çğıöşü]/g, ch => 'cgiosu'['çğıöşü'.indexOf(ch)]),
-        pick(OCCUPATIONS), '', '', primaryIsMother ? 1 : 0);
+        pick(OCCUPATIONS), '', '', primaryIsMother ? 1 : 0, primaryIsMother ? 1 : 0, primaryIsMother ? 1 : 0);
       insParent.run(sid, 'BABA', fatherName, fakeTc(), fatherPhone,
         `${first.toLowerCase()}.baba${counter}@example.com`.replace(/[çğıöşü]/g, ch => 'cgiosu'['çğıöşü'.indexOf(ch)]),
-        pick(OCCUPATIONS), '', '', primaryIsMother ? 0 : 1);
+        pick(OCCUPATIONS), '', '', primaryIsMother ? 0 : 1, primaryIsMother ? 0 : 1, primaryIsMother ? 0 : 1);
       const payerName = primaryIsMother ? motherName : fatherName;
       const payerPhone = primaryIsMother ? motherPhone : fatherPhone;
 

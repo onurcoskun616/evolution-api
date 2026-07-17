@@ -5,7 +5,7 @@ const { requirePermission, assertCampusAccess, campusScope } = require('../auth'
 const router = express.Router();
 
 const PAYMENT_METHODS = ['NAKIT', 'KREDI_KARTI', 'KMH', 'SENET', 'HAVALE_EFT', 'CEK', 'MAIL_ORDER'];
-const ENROLLMENT_TYPES = ['DIS_KAYIT', 'IC_KAYIT', 'NAKIL'];
+const ENROLLMENT_TYPES = ['DIS_KAYIT', 'IC_KAYIT'];
 const { GRADES, MAX_CLASS_SIZE, SECTION_LETTERS } = require('./parameters');
 const { tcError, phoneField } = require('../validate');
 

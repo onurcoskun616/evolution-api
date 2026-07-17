@@ -131,7 +131,7 @@ async function main() {
         tc_no: '12345678950', gender: 'KIZ', grade: '10',
         birth_date: '2015-03-10', city: 'İstanbul', district: 'Fatih',
         parents: [
-          { relation: 'ANNE', full_name: 'Test Anne', phone: '0532 111 22 33', is_primary: true },
+          { relation: 'ANNE', full_name: 'Test Anne', phone: '0532 111 22 33', is_guardian: true, is_payer: true },
           { relation: 'BABA', full_name: 'Test Baba', phone: '0533 444 55 66' },
         ],
       },
@@ -141,6 +141,73 @@ async function main() {
     assert.ok(r.data.student_no.startsWith('MRK-'));
     const d = await req('GET', '/students/' + studentId, { token: campusToken });
     assert.equal(d.data.parents.length, 2);
+    const anne = d.data.parents.find(p => p.relation === 'ANNE');
+    assert.equal(anne.is_guardian, 1, 'anne veli olmalı');
+    assert.equal(anne.is_payer, 1, 'anne ödeme sorumlusu olmalı');
+  });
+
+  await test('Aile kuralları: anne+baba zorunlu, tek veli/ödeme sorumlusu, diğer şahıs', async () => {
+    // Sadece anne -> baba eksik hatası
+    let r = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: 'Eksik', last_name: 'Baba', campus_id: campusId,
+        parents: [{ relation: 'ANNE', full_name: 'Yalnız Anne', phone: '0532 100 20 30' }],
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(/Baba/i.test(r.data.error), r.data.error);
+    // İki veli işaretli -> hata
+    r = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: 'Çift', last_name: 'Veli', campus_id: campusId,
+        parents: [
+          { relation: 'ANNE', full_name: 'A', phone: '0532 100 20 30', is_guardian: true },
+          { relation: 'BABA', full_name: 'B', phone: '0533 100 20 30', is_guardian: true },
+        ],
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(/bir kişi veli/i.test(r.data.error), r.data.error);
+    // Anne+baba + ödeme sorumlusu teyze (diğer şahıs)
+    r = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: 'Teyze', last_name: 'Öder', campus_id: campusId,
+        parents: [
+          { relation: 'ANNE', full_name: 'Anne T', phone: '0532 100 20 30', is_guardian: true },
+          { relation: 'BABA', full_name: 'Baba T', phone: '0533 100 20 30' },
+          { relation: 'TEYZE', full_name: 'Teyze T', phone: '0534 100 20 30', is_payer: true },
+        ],
+      },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const d = await req('GET', '/students/' + r.data.id, { token: campusToken });
+    assert.equal(d.data.parents.find(p => p.relation === 'TEYZE').is_payer, 1);
+    assert.equal(d.data.parents.find(p => p.relation === 'ANNE').is_guardian, 1);
+    assert.equal(d.data.parents.find(p => p.relation === 'ANNE').is_payer, 0);
+    // Bayraksız anne+baba -> ilk kişi otomatik veli+ödeme sorumlusu
+    r = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: 'Otomatik', last_name: 'Atama', campus_id: campusId,
+        parents: [
+          { relation: 'ANNE', full_name: 'Anne O', phone: '0532 100 20 31' },
+          { relation: 'BABA', full_name: 'Baba O', phone: '0533 100 20 31' },
+        ],
+      },
+    });
+    assert.equal(r.status, 200);
+    const d2 = await req('GET', '/students/' + r.data.id, { token: campusToken });
+    assert.equal(d2.data.parents.filter(p => p.is_guardian).length, 1);
+    assert.equal(d2.data.parents.filter(p => p.is_payer).length, 1);
+  });
+
+  await test('Kayıt türlerinde Nakil yok', async () => {
+    const meta = await req('GET', '/meta', { token: campusToken });
+    assert.equal(meta.data.enrollment_types.length, 2);
+    assert.ok(!meta.data.enrollment_types.some(t => t.value === 'NAKIL'));
   });
 
   await test('Aynı TC ile ikinci öğrenci reddedilir', async () => {

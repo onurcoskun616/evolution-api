@@ -79,7 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_students_status ON students(status);
 CREATE TABLE IF NOT EXISTS parents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-  relation TEXT NOT NULL CHECK (relation IN ('ANNE','BABA','VASI','DIGER')),
+  relation TEXT NOT NULL CHECK (relation IN ('ANNE','BABA','VASI','ABI','ABLA','DEDE','NINE','AMCA','HALA','DAYI','TEYZE','KUZEN','DIGER')),
   full_name TEXT NOT NULL,
   tc_no TEXT DEFAULT '',
   phone TEXT DEFAULT '',
@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS parents (
   education TEXT DEFAULT '',
   address TEXT DEFAULT '',
   is_primary INTEGER NOT NULL DEFAULT 0,
+  is_guardian INTEGER NOT NULL DEFAULT 0,
+  is_payer INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_parents_student ON parents(student_id);
@@ -248,6 +250,16 @@ if (!eiCols.includes('discount_rate')) {
     ALTER TABLE enrollment_items ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0;
     ALTER TABLE enrollment_items ADD COLUMN net_total REAL NOT NULL DEFAULT 0;
     UPDATE enrollment_items SET net_total = total;
+  `);
+}
+
+// Veli/ödeme sorumlusu bayrakları geçişi
+const paCols = db.prepare('PRAGMA table_info(parents)').all().map(c => c.name);
+if (!paCols.includes('is_guardian')) {
+  db.exec(`
+    ALTER TABLE parents ADD COLUMN is_guardian INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE parents ADD COLUMN is_payer INTEGER NOT NULL DEFAULT 0;
+    UPDATE parents SET is_guardian = is_primary, is_payer = is_primary;
   `);
 }
 

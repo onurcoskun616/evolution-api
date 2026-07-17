@@ -35,7 +35,6 @@ app.get('/api/meta', authenticate, (req, res) => {
     enrollment_types: [
       { value: 'DIS_KAYIT', label: 'Dış Kayıt (Yeni Öğrenci)' },
       { value: 'IC_KAYIT', label: 'İç Kayıt (Kayıt Yenileme)' },
-      { value: 'NAKIL', label: 'Nakil' },
     ],
     student_statuses: [
       { value: 'AKTIF', label: 'Aktif' }, { value: 'ADAY', label: 'Aday' },

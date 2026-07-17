@@ -112,10 +112,13 @@ function validateStudentBody(b) {
   return null;
 }
 
+const RELATIONS = ['ANNE', 'BABA', 'VASI', 'ABI', 'ABLA', 'DEDE', 'NINE', 'AMCA', 'HALA', 'DAYI', 'TEYZE', 'KUZEN', 'DIGER'];
+
 /** Veli kayıtlarını doğrular ve telefonları normalize eder; hata mesajı ya da null döner. */
 function validateParents(parents) {
   for (const p of parents) {
     if (!p.full_name || !p.relation) continue;
+    if (!RELATIONS.includes(p.relation)) return 'Geçersiz yakınlık türü.';
     const label = `Veli (${String(p.full_name).trim()})`;
     const tErr = tcError(p.tc_no, label);
     if (tErr) return tErr;
@@ -126,6 +129,35 @@ function validateParents(parents) {
       p[key] = r.value;
     }
   }
+  return null;
+}
+
+/**
+ * Aile yapısı kuralı (veli listesi verildiyse):
+ *  - Anne VE Baba kayıtları zorunludur
+ *  - Tam olarak bir kişi VELİ, tam olarak bir kişi ÖDEME SORUMLUSU olmalıdır
+ *    (işaretlenmemişse birincil/ilk kişi otomatik atanır)
+ *  - Veli ve ödeme sorumlusunun telefonu zorunludur
+ */
+function applyFamilyRules(parents) {
+  const named = parents.filter(p => p.full_name && p.relation);
+  if (!named.length) return null;
+  if (!named.some(p => p.relation === 'ANNE')) return 'Anne bilgileri zorunludur.';
+  if (!named.some(p => p.relation === 'BABA')) return 'Baba bilgileri zorunludur.';
+  const guardians = named.filter(p => p.is_guardian);
+  const payers = named.filter(p => p.is_payer);
+  if (guardians.length > 1) return 'Yalnızca bir kişi veli olarak işaretlenebilir.';
+  if (payers.length > 1) return 'Yalnızca bir kişi ödeme sorumlusu olarak işaretlenebilir.';
+  const fallback = named.find(p => p.is_primary) || named[0];
+  const guardian = guardians[0] || fallback;
+  const payer = payers[0] || guardian;
+  for (const p of named) {
+    p.is_guardian = p === guardian ? 1 : 0;
+    p.is_payer = p === payer ? 1 : 0;
+    p.is_primary = p === guardian ? 1 : 0; // veli = birincil iletişim
+  }
+  if (!String(guardian.phone || '').trim()) return `Veli olarak işaretlenen kişinin (${guardian.full_name}) telefonu zorunludur.`;
+  if (!String(payer.phone || '').trim()) return `Ödeme sorumlusunun (${payer.full_name}) telefonu zorunludur.`;
   return null;
 }
 
@@ -156,6 +188,8 @@ router.post('/', requirePermission('student.create'), (req, res) => {
   const parentList = Array.isArray(b.parents) ? b.parents : [];
   const parentErr = validateParents(parentList);
   if (parentErr) return res.status(400).json({ error: parentErr });
+  const familyErr = applyFamilyRules(parentList);
+  if (familyErr) return res.status(400).json({ error: familyErr });
   let previousSchoolId = null;
   if (b.previous_school_id) {
     const sch = db.prepare('SELECT * FROM schools WHERE id = ?').get(Number(b.previous_school_id));
@@ -207,11 +241,12 @@ router.post('/', requirePermission('student.create'), (req, res) => {
       if (!p.full_name || !p.relation) continue;
       db.prepare(`
         INSERT INTO parents (student_id, relation, full_name, tc_no, phone, phone2, email,
-          occupation, workplace, education, address, is_primary)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          occupation, workplace, education, address, is_primary, is_guardian, is_payer)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(studentId, p.relation, String(p.full_name).trim(), p.tc_no || '', p.phone || '',
           p.phone2 || '', p.email || '', p.occupation || '', p.workplace || '',
-          p.education || '', p.address || '', p.is_primary ? 1 : 0);
+          p.education || '', p.address || '', p.is_primary ? 1 : 0,
+          p.is_guardian ? 1 : 0, p.is_payer ? 1 : 0);
     }
     return { id: studentId, student_no: studentNo };
   })();
@@ -323,13 +358,17 @@ router.post('/:id/parents', requirePermission('student.edit'), (req, res) => {
   if (!p.full_name || !p.relation) return res.status(400).json({ error: 'Yakınlık ve ad soyad zorunludur.' });
   const vErr = validateParents([p]);
   if (vErr) return res.status(400).json({ error: vErr });
-  const info = db.prepare(`
-    INSERT INTO parents (student_id, relation, full_name, tc_no, phone, phone2, email,
-      occupation, workplace, education, address, is_primary)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(s.id, p.relation, String(p.full_name).trim(), p.tc_no || '', p.phone || '', p.phone2 || '',
-      p.email || '', p.occupation || '', p.workplace || '', p.education || '', p.address || '',
-      p.is_primary ? 1 : 0);
+  const info = db.transaction(() => {
+    if (p.is_guardian) db.prepare('UPDATE parents SET is_guardian = 0, is_primary = 0 WHERE student_id = ?').run(s.id);
+    if (p.is_payer) db.prepare('UPDATE parents SET is_payer = 0 WHERE student_id = ?').run(s.id);
+    return db.prepare(`
+      INSERT INTO parents (student_id, relation, full_name, tc_no, phone, phone2, email,
+        occupation, workplace, education, address, is_primary, is_guardian, is_payer)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(s.id, p.relation, String(p.full_name).trim(), p.tc_no || '', p.phone || '', p.phone2 || '',
+        p.email || '', p.occupation || '', p.workplace || '', p.education || '', p.address || '',
+        p.is_guardian ? 1 : (p.is_primary ? 1 : 0), p.is_guardian ? 1 : 0, p.is_payer ? 1 : 0);
+  })();
   audit(req.user.id, 'CREATE', 'parent', info.lastInsertRowid, `${s.student_no} / ${p.full_name}`);
   res.json({ id: info.lastInsertRowid });
 });
@@ -346,20 +385,26 @@ router.put('/:id/parents/:parentId', requirePermission('student.edit'), (req, re
   if (vErr) return res.status(400).json({ error: vErr });
   if (p.phone !== undefined) p.phone = check.phone;   // normalize edilmiş halini kullan
   if (p.phone2 !== undefined) p.phone2 = check.phone2;
-  db.prepare(`
-    UPDATE parents SET relation = ?, full_name = ?, tc_no = ?, phone = ?, phone2 = ?, email = ?,
-      occupation = ?, workplace = ?, education = ?, address = ?, is_primary = ? WHERE id = ?`)
-    .run(p.relation || existing.relation, p.full_name || existing.full_name,
-      p.tc_no !== undefined ? p.tc_no : existing.tc_no,
-      p.phone !== undefined ? p.phone : existing.phone,
-      p.phone2 !== undefined ? p.phone2 : existing.phone2,
-      p.email !== undefined ? p.email : existing.email,
-      p.occupation !== undefined ? p.occupation : existing.occupation,
-      p.workplace !== undefined ? p.workplace : existing.workplace,
-      p.education !== undefined ? p.education : existing.education,
-      p.address !== undefined ? p.address : existing.address,
-      p.is_primary !== undefined ? (p.is_primary ? 1 : 0) : existing.is_primary,
-      existing.id);
+  db.transaction(() => {
+    if (p.is_guardian) db.prepare('UPDATE parents SET is_guardian = 0, is_primary = 0 WHERE student_id = ? AND id != ?').run(s.id, existing.id);
+    if (p.is_payer) db.prepare('UPDATE parents SET is_payer = 0 WHERE student_id = ? AND id != ?').run(s.id, existing.id);
+    db.prepare(`
+      UPDATE parents SET relation = ?, full_name = ?, tc_no = ?, phone = ?, phone2 = ?, email = ?,
+        occupation = ?, workplace = ?, education = ?, address = ?, is_primary = ?, is_guardian = ?, is_payer = ? WHERE id = ?`)
+      .run(p.relation || existing.relation, p.full_name || existing.full_name,
+        p.tc_no !== undefined ? p.tc_no : existing.tc_no,
+        p.phone !== undefined ? p.phone : existing.phone,
+        p.phone2 !== undefined ? p.phone2 : existing.phone2,
+        p.email !== undefined ? p.email : existing.email,
+        p.occupation !== undefined ? p.occupation : existing.occupation,
+        p.workplace !== undefined ? p.workplace : existing.workplace,
+        p.education !== undefined ? p.education : existing.education,
+        p.address !== undefined ? p.address : existing.address,
+        p.is_guardian !== undefined ? (p.is_guardian ? 1 : 0) : (p.is_primary !== undefined ? (p.is_primary ? 1 : 0) : existing.is_primary),
+        p.is_guardian !== undefined ? (p.is_guardian ? 1 : 0) : existing.is_guardian,
+        p.is_payer !== undefined ? (p.is_payer ? 1 : 0) : existing.is_payer,
+        existing.id);
+  })();
   audit(req.user.id, 'UPDATE', 'parent', existing.id, s.student_no);
   res.json({ ok: true });
 });
