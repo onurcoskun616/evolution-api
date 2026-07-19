@@ -1000,6 +1000,15 @@ async function main() {
     assert.equal(c.parents[0].phone, '0532 111 22 33', 'telefon normalize edilmeli');
   });
 
+  await test('Entegrasyon: adayı veli telefonundan da arayabilir', async () => {
+    // Tam, boşluksuz ve son-4-hane biçimleriyle telefondan bulunmalı
+    for (const term of ['0532 111 22 33', '05321112233', '5321112233', '2233']) {
+      const r = await req('GET', '/students/crm/candidates?search=' + encodeURIComponent(term), { token: campusToken });
+      const hit = r.data.candidates.find(x => x.crm_form_id === candidateFormId);
+      assert.ok(hit, `telefon araması "${term}" adayı bulmalı`);
+    }
+  });
+
   await test('Entegrasyon: eksik crm_id/ad reddedilir (400 hata alanı)', async () => {
     const r = await crmReq('POST', '/candidates', { ad: 'A' });
     assert.equal(r.status, 400);

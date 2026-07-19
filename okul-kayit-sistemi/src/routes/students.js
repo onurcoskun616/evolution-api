@@ -318,8 +318,17 @@ router.get('/crm/candidates', requirePermission('enrollment.create'), (req, res)
   const where = [`status = 'BEKLIYOR'`];
   const params = {};
   if (q.search) {
-    where.push(`(first_name || ' ' || last_name LIKE @s OR tc_no LIKE @s OR crm_form_id LIKE @s)`);
-    params.s = `%${String(q.search).trim()}%`;
+    const raw = String(q.search).trim();
+    const conds = [`first_name || ' ' || last_name LIKE @s`, `tc_no LIKE @s`, `crm_form_id LIKE @s`];
+    params.s = `%${raw}%`;
+    // Telefonla arama: parents_json içindeki veli telefonlarını biçimden bağımsız (boşluk/tire/parantez
+    // temizlenmiş) eşle. En az 4 rakam girilirse çalışır (son haneyle de aranabilir).
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length >= 4) {
+      conds.push(`REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(parents_json,' ',''),'-',''),'(',''),')',''),'+','') LIKE @ph`);
+      params.ph = `%${digits}%`;
+    }
+    where.push('(' + conds.join(' OR ') + ')');
   }
   // Kampüsler arası kayıt: CRM'de bir kampüse ait aday başka kampüse kayıt olabilir.
   // Bu nedenle tüm kullanıcılar tüm adayları görebilir; campus_code yalnız bilgi amaçlıdır
