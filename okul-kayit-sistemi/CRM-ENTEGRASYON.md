@@ -48,6 +48,13 @@ Kayıt personeli: **Yeni Kayıt → Yeni Öğrenci → CRM'den Getir** ile aday�
 form otomatik dolar. Alternatif: Parametreler'de **"CRM'den Adayları Çek"** düğmesi
 CRM'in `GET /api/okul/adaylar/` ucundan adayları toplu içeri alır.
 
+**Kampüslerarası kayıt:** CRM'de bir kampüse (örn. İstanbul OSB) bağlı görünen aday,
+fiilen başka bir kampüse (örn. İkitelli OSB) kayıt olabilir. Bu nedenle **tüm kampüsler
+tüm adayları görüp kayıt alabilir** — adayın `campus_code` etiketi yalnızca adayın CRM'de
+hangi kampüste açıldığını gösteren bilgi amaçlıdır, kaydı kısıtlamaz. Öğrencinin gerçekte
+hangi kampüse kayıt olduğu, kayıt sonucu bildiriminde (`kampus` / `kampus_kodu`) CRM'e
+iletilir (bkz. bölüm 2).
+
 ---
 
 ## 2) Okul → CRM: Kayıt / iptal bildirimi
@@ -62,10 +69,14 @@ Parametreler'de CRM Taban Adresi + CRM API Anahtarı tanımlıysa otomatik çağ
   "okul_no": "MRK-2026-00042",
   "kayit_tarihi": "2026-09-01T00:00:00",
   "sinif": "10", "bolum": "Bilişim Teknolojileri", "sube": "A",
+  "kampus": "İkitelli OSB", "kampus_kodu": "MRK",
   "veli_adi": "...", "veli_telefon": "...", "veli2_adi": "...", "veli2_telefon": "...",
   "il": "İstanbul", "ilce": "Fatih", "mahalle": "..."
 }
 ```
+
+`kampus` / `kampus_kodu` = öğrencinin **fiilen** kayıt olduğu kampüs (CRM'deki aday
+kampüsünden farklı olabilir). Bildirim, gerçek kayıt kampüsünün CRM anahtarıyla gönderilir.
 
 **Kayıt iptali** → `POST {taban}/api/okul/kayit-iptal/`
 ```json

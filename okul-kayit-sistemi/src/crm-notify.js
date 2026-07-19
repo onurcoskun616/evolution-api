@@ -43,6 +43,8 @@ async function notifyCrmEnrollment(enrollmentId) {
   const s = db.prepare('SELECT * FROM students WHERE id = ?').get(e.student_id);
   if (!s || !s.crm_form_id) return { skipped: true }; // CRM'den gelmemiş öğrenci
   const dept = e.department_id ? db.prepare('SELECT name FROM departments WHERE id = ?').get(e.department_id) : null;
+  // Öğrencinin gerçekte kayıt olduğu kampüs (CRM'deki aday kampüsünden farklı olabilir).
+  const campus = db.prepare('SELECT code, name FROM campuses WHERE id = ?').get(e.campus_id) || {};
   const parents = db.prepare(
     'SELECT relation, full_name, phone, is_guardian FROM parents WHERE student_id = ? ORDER BY is_guardian DESC, id'
   ).all(s.id);
@@ -55,6 +57,8 @@ async function notifyCrmEnrollment(enrollmentId) {
     sinif: e.grade,
     bolum: dept ? dept.name : '',
     sube: e.section,
+    kampus: campus.name || '',       // gerçekte kayıt olunan kampüs adı
+    kampus_kodu: campus.code || '',  // gerçekte kayıt olunan kampüs kodu
     veli_adi: v1.full_name || '', veli_telefon: v1.phone || '',
     veli2_adi: v2.full_name || '', veli2_telefon: v2.phone || '',
     il: s.city, ilce: s.district, mahalle: s.neighborhood,

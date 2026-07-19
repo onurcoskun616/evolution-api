@@ -321,12 +321,9 @@ router.get('/crm/candidates', requirePermission('enrollment.create'), (req, res)
     where.push(`(first_name || ' ' || last_name LIKE @s OR tc_no LIKE @s OR crm_form_id LIKE @s)`);
     params.s = `%${String(q.search).trim()}%`;
   }
-  // Kampüs kullanıcıları yalnız kendi kampüs koduna ait veya kampüssüz adayları görür
-  if (req.user.role !== 'GENEL_MERKEZ') {
-    const c = db.prepare('SELECT code FROM campuses WHERE id = ?').get(req.user.campus_id);
-    where.push(`(campus_code = @cc OR campus_code = '')`);
-    params.cc = c ? c.code : '';
-  }
+  // Kampüsler arası kayıt: CRM'de bir kampüse ait aday başka kampüse kayıt olabilir.
+  // Bu nedenle tüm kullanıcılar tüm adayları görebilir; campus_code yalnız bilgi amaçlıdır
+  // (adayın CRM'de hangi kampüste açıldığını gösterir, kaydı kısıtlamaz).
   const rows = db.prepare(`
     SELECT id, crm_form_id, campus_code, first_name, last_name, tc_no, birth_date, gender,
       grade, city, district, neighborhood, address, parents_json, notes, created_at

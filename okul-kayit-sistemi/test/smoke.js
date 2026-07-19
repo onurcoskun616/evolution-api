@@ -1013,6 +1013,50 @@ async function main() {
     assert.equal(r.status, 400);
   });
 
+  await test('Kampüslerarası: başka kampüsün adayı da görülüp kayıt alınabilir', async () => {
+    // Farklı bir kampüs (MRK dışı) bul ve o kampüs için Okul API anahtarı üret
+    const cs = await req('GET', '/campuses', { token: hqToken });
+    const other = cs.data.campuses.find(c => c.id !== campusId);
+    assert.ok(other, 'ikinci kampüs olmalı');
+    const keyRes = await req('POST', `/parameters/integration/campus/${other.id}/okul-key`, { token: hqToken });
+    assert.equal(keyRes.status, 200, JSON.stringify(keyRes.data));
+    const otherKey = keyRes.data.key;
+    // CRM, other kampüsün anahtarıyla aday gönderir -> aday other kampüs koduyla etiketlenir
+    const post = await fetch(BASE + '/api/integration/candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': otherKey },
+      body: JSON.stringify({
+        crm_id: 90050, ad: 'Capraz', soyad: 'Kampus', tc_kimlik: '48210000038', sinif: '10',
+        veli_adi: 'Capraz Anne', veli_telefon: '5321119900',
+        veli2_adi: 'Capraz Baba', veli2_telefon: '5331119900',
+      }),
+    });
+    assert.equal(post.status, 201, await post.clone().text());
+    // MRK kampüs müdürü, başka kampüs koduyla etiketli adayı da görebilmeli
+    const list = await req('GET', '/students/crm/candidates?search=Capraz', { token: campusToken });
+    const cand = list.data.candidates.find(x => x.crm_form_id === '90050');
+    assert.ok(cand, 'başka kampüsün adayı MRK müdürüne görünmeli');
+    assert.equal(cand.campus_code, other.code, 'aday kaynağı bilgi amaçlı etiketli kalmalı');
+    // MRK kampüsüne kayıt alınabilir
+    const s = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: cand.first_name, last_name: cand.last_name, campus_id: campusId,
+        tc_no: cand.tc_no, crm_form_id: cand.crm_form_id, grade: '10',
+        parents: [
+          { relation: 'ANNE', full_name: 'Capraz Anne', phone: '0532 111 99 00', is_guardian: true, is_payer: true },
+          { relation: 'BABA', full_name: 'Capraz Baba', phone: '0533 111 99 00' },
+        ],
+      },
+    });
+    assert.equal(s.status, 200, JSON.stringify(s.data));
+    assert.ok(s.data.student_no.startsWith('MRK-'), 'öğrenci MRK numarası almalı');
+    // CRM sorgusunda gerçekte kayıt olunan kampüs (MRK) görünmeli
+    const crm = await fetch(BASE + '/api/integration/students/90050', { headers: { 'X-API-Key': otherKey } });
+    const crmData = await crm.json();
+    assert.equal(crmData.student.kampus_kodu, 'MRK', 'gerçek kayıt kampüsü MRK olmalı');
+  });
+
   await test('Entegrasyon: adaydan kesin kayıt -> CRM sorgusuyla sözleşme no döner', async () => {
     const list = await req('GET', '/students/crm/candidates?search=CRMden', { token: campusToken });
     const cand = list.data.candidates.find(x => x.crm_form_id === candidateFormId);
