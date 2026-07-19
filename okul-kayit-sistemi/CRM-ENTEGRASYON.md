@@ -48,6 +48,26 @@ Kayıt personeli: **Yeni Kayıt → Yeni Öğrenci → CRM'den Getir** ile aday�
 form otomatik dolar. Alternatif: Parametreler'de **"CRM'den Adayları Çek"** düğmesi
 CRM'in `GET /api/okul/adaylar/` ucundan adayları toplu içeri alır.
 
+**Otomatik aday çekme (buton beklemeden):** Okul sistemi, CRM'in `GET /api/okul/adaylar/`
+ucundan adayları **periyodik ve otomatik** olarak çeker (varsayılan 5 dk, artımlı).
+Böylece CRM'de "Okul Kayıt Sistemine Gönder" butonuna basılması **gerekmez** — CRM'in
+döndürdüğü `kayit_iptal` dışındaki tüm adaylar okul tarafında kendiliğinden hazır olur.
+
+- Yanıttaki alanlar (mevcut + yeni): `id, ad, soyad, tc_kimlik, sinif, veli_adi, veli_telefon,
+  veli2_adi, veli2_telefon, bolum, sube, il, ilce, mahalle, cinsiyet, dogum_tarihi,
+  kayit_durumu, okul_entegrasyon_durumu, guncelleme_tarihi`.
+- **Artımlı sync:** Okul sistemi her kampüs için gördüğü en yeni `guncelleme_tarihi` değerini
+  saklar ve sonraki çağrıda `GET /api/okul/adaylar/?guncelleme_sonrasi=<tarih>` ile yalnız
+  değişenleri ister. Kampüs kartında **"CRM'den Adayları Çek"** manuel çekim tetikler;
+  gerekirse tam yeniden çekim (imleç sıfırlayarak) yapılır.
+- `kayit_durumu = "kayit_iptal"` gelen aday, okul tarafında kayda dönmemişse **IPTAL**
+  işaretlenir (aday listesinden düşer).
+- Aynı `id` (CRM `crm_id`) tekrar geldiğinde aday güncellenir; kesin kayda dönmüş
+  (AKTARILDI) aday **üzerine yazılmaz**.
+
+Otomatik çekim ayarları (Parametreler > CRM): `crm_auto_pull` (`0` = kapalı), `crm_auto_pull_min`
+(dakika, varsayılan 5). Not: Render ücretsiz planında sunucu uykudayken tetiklenmez; uyanınca sürer.
+
 **Kampüslerarası kayıt:** CRM'de bir kampüse (örn. İstanbul OSB) bağlı görünen aday,
 fiilen başka bir kampüse (örn. İkitelli OSB) kayıt olabilir. Bu nedenle **tüm kampüsler
 tüm adayları görüp kayıt alabilir** — adayın `campus_code` etiketi yalnızca adayın CRM'de

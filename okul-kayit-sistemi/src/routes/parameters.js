@@ -635,9 +635,11 @@ router.post('/integration/campus/:campusId/okul-key', requirePermission('setting
 router.post('/integration/pull-candidates', requirePermission('settings.manage'), async (req, res) => {
   try {
     const { pullCandidatesFromCrm } = require('../crm-notify');
-    const campusId = req.user.role === 'GENEL_MERKEZ' ? (Number((req.body || {}).campus_id) || null) : req.user.campus_id;
-    const r = await pullCandidatesFromCrm(campusId);
-    audit(req.user.id, 'CRM_PULL', 'crm_candidate', null, `kampüs=${r.campuses} eklendi=${r.imported} güncellendi=${r.updated}`);
+    const body = req.body || {};
+    const campusId = req.user.role === 'GENEL_MERKEZ' ? (Number(body.campus_id) || null) : req.user.campus_id;
+    const r = await pullCandidatesFromCrm(campusId, { full: !!body.full });
+    audit(req.user.id, 'CRM_PULL', 'crm_candidate', null,
+      `kampüs=${r.campuses} eklendi=${r.imported} güncellendi=${r.updated} iptal=${r.cancelled}`);
     res.json(r);
   } catch (e) {
     res.status(400).json({ error: e.message });

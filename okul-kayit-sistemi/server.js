@@ -79,11 +79,44 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Sunucu hatası: ' + err.message });
 });
 
+/**
+ * Otomatik aday senkronizasyonu: CRM'den adayları periyodik olarak (varsayılan 5 dk)
+ * artımlı çeker; böylece "Okul Kayıt Sistemine Gönder" butonuna basılmasını beklemeden
+ * tüm adaylar okul tarafında hazır olur. Ayarlar (Parametreler > CRM):
+ *   crm_auto_pull       : '0' ise kapalı (varsayılan açık; taban URL tanımlıysa çalışır)
+ *   crm_auto_pull_min   : dakika cinsinden aralık (varsayılan 5, en az 1)
+ * Not: Render ücretsiz planında sunucu uykudayken tetiklenmez; uyanınca devam eder.
+ */
+function startAutoPull() {
+  const { getSetting } = require('./src/db');
+  const { pullCandidatesFromCrm } = require('./src/crm-notify');
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    if (getSetting('crm_auto_pull', '1') === '0') return;
+    if (!getSetting('crm_base_url', '').trim()) return;
+    running = true;
+    try {
+      const r = await pullCandidatesFromCrm(null); // artımlı, tüm aktif kampüsler
+      if (r.imported || r.updated || r.cancelled) {
+        console.log(`[CRM oto-çekim] eklendi=${r.imported} güncellendi=${r.updated} iptal=${r.cancelled}`);
+      }
+    } catch (e) {
+      console.warn('[CRM oto-çekim] hata:', e.message);
+    } finally { running = false; }
+  };
+  const minutes = Math.max(1, parseInt(getSetting('crm_auto_pull_min', '5'), 10) || 5);
+  const timer = setInterval(tick, minutes * 60 * 1000);
+  timer.unref(); // süreç kapanışını engellemesin
+  setTimeout(tick, 15000).unref(); // açılıştan 15 sn sonra ilk çekim
+}
+
 const PORT = process.env.PORT || 3000;
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Okul Kayıt Sistemi çalışıyor: http://localhost:${PORT}`);
   });
+  startAutoPull();
 }
 
 module.exports = app;
