@@ -407,9 +407,15 @@ const seedAll = db.transaction(() => {
 
 const total = seedAll();
 
-// ---- CRM entegrasyonu: örnek API anahtarı ve bekleyen adaylar ----
-db.prepare('INSERT INTO integration_keys (name, key) VALUES (?, ?)')
-  .run('Demo CRM Anahtarı', 'okl_demo_crm_key_0123456789abcdef');
+// ---- CRM entegrasyonu: kampüs bazlı örnek anahtarlar ve bekleyen adaylar ----
+const { setSetting } = require('./src/db');
+setSetting('crm_base_url', 'https://crm.topkapiokullari.com');
+const insKey = db.prepare('INSERT INTO integration_keys (name, key, campus_id) VALUES (?, ?, ?)');
+for (const c of campusIds) {
+  insKey.run(`${c.name} Okul API`, `okl_demo_${c.code.toLowerCase()}_0123456789abcdef`, c.id);
+  setSetting(`crm_api_key_${c.id}`, `crm_demo_${c.code.toLowerCase()}_key`);
+  setSetting(`crm_active_${c.id}`, '1');
+}
 const insCand = db.prepare(`
   INSERT INTO crm_candidates (crm_form_id, campus_code, first_name, last_name, tc_no, birth_date,
     gender, grade, city, district, neighborhood, address, parents_json, notes)

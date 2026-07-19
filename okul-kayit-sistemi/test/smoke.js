@@ -954,13 +954,13 @@ async function main() {
   });
 
   let apiKey;
-  await test('Entegrasyon: API anahtarı oluşturma (yalnız yetkili)', async () => {
-    const denied = await req('POST', '/parameters/integration/keys', { token: campusToken, body: { name: 'X' } });
+  await test('Entegrasyon: kampüs Okul API anahtarı üretme (yalnız yetkili)', async () => {
+    const denied = await req('POST', `/parameters/integration/campus/${campusId}/okul-key`, { token: muhasebeToken });
     assert.equal(denied.status, 403);
-    const r = await req('POST', '/parameters/integration/keys', { token: hqToken, body: { name: 'Test CRM' } });
+    const r = await req('POST', `/parameters/integration/campus/${campusId}/okul-key`, { token: hqToken });
     assert.equal(r.status, 200, JSON.stringify(r.data));
     assert.ok(r.data.key.startsWith('okl_'));
-    apiKey = r.data.key;
+    apiKey = r.data.key; // MRK kampüsüne bağlı anahtar
   });
 
   async function crmReq(method, path, body) {
@@ -972,11 +972,11 @@ async function main() {
     return { status: res.status, data: await res.json().catch(() => ({})) };
   }
 
-  await test('Entegrasyon: API anahtarsız erişim reddedilir', async () => {
+  await test('Entegrasyon: anahtarsız 401, geçersiz anahtar 403', async () => {
     const res = await fetch(BASE + '/api/integration/candidates');
     assert.equal(res.status, 401);
-    const bad = await fetch(BASE + '/api/integration/candidates', { headers: { 'X-API-Key': 'yanlis' } });
-    assert.equal(bad.status, 401);
+    const bad = await fetch(BASE + '/api/integration/candidates', { headers: { 'X-Api-Key': 'yanlis' } });
+    assert.equal(bad.status, 403);
   });
 
   let candidateFormId = '90001'; // CRM crm_id (integer, seed disi)
@@ -1069,6 +1069,29 @@ async function main() {
     assert.equal(r2.status, 200);
     assert.ok(r2.data.enrollments.length > 0);
     assert.ok(r2.data.enrollments[0].id > r.data.next_after_id);
+  });
+
+  await test('Entegrasyon: kampüs bazlı ayar (taban + kampüs anahtarı + Okul anahtarı)', async () => {
+    const r = await req('GET', '/parameters/integration', { token: hqToken });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.campuses.length, 5, 'her kampüs için satır olmalı');
+    // Taban adresi kaydet
+    await req('PUT', '/parameters/integration/crm-base', { token: hqToken, body: { crm_base_url: 'https://crm.topkapiokullari.com' } });
+    // Kampüs CRM anahtarı + aktiflik
+    const up = await req('PUT', '/parameters/integration/campus/' + campusId, {
+      token: hqToken, body: { crm_api_key: 'CRM_MRK_KEY', active: true },
+    });
+    assert.equal(up.status, 200, JSON.stringify(up.data));
+    const r2 = await req('GET', '/parameters/integration', { token: hqToken });
+    const mrk = r2.data.campuses.find(c => c.id === campusId);
+    assert.equal(mrk.crm_api_key, 'CRM_MRK_KEY');
+    assert.equal(mrk.active, true);
+    // Yetkisiz kampüs müdürü başka kampüsü düzenleyemez
+    const otherCampus = r2.data.campuses.find(c => c.id !== campusId);
+    const denied = await req('PUT', '/parameters/integration/campus/' + otherCampus.id, {
+      token: campusToken, body: { active: true },
+    });
+    assert.equal(denied.status, 403);
   });
 
   await test('Öğrenci durumları: sadece Kayıtlı/Mezun/Kayıt Sildi', async () => {

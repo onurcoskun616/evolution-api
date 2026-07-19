@@ -10,15 +10,17 @@
  */
 const { db, getSetting } = require('./db');
 
-function crmConfig() {
+/** Kampüs bazlı CRM yapılandırması: taban URL ortak, API anahtarı ve aktiflik kampüse özel. */
+function crmConfig(campusId) {
   const base = getSetting('crm_base_url', '').trim().replace(/\/+$/, '');
-  const key = getSetting('crm_api_key', '').trim();
-  return { base, key };
+  const key = getSetting(`crm_api_key_${campusId}`, '').trim();
+  const active = getSetting(`crm_active_${campusId}`, '') === '1';
+  return { base, key, active };
 }
 
-async function crmPost(pathname, body) {
-  const { base, key } = crmConfig();
-  if (!base || !key) return { skipped: true };
+async function crmPost(campusId, pathname, body) {
+  const { base, key, active } = crmConfig(campusId);
+  if (!base || !key || !active) return { skipped: true };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10000); // doküman: 10 sn timeout
   try {
@@ -57,7 +59,7 @@ async function notifyCrmEnrollment(enrollmentId) {
     veli2_adi: v2.full_name || '', veli2_telefon: v2.phone || '',
     il: s.city, ilce: s.district, mahalle: s.neighborhood,
   };
-  return crmPost('/api/okul/kayit-sonucu/', payload);
+  return crmPost(e.campus_id, '/api/okul/kayit-sonucu/', payload);
 }
 
 /** Kayıt iptalini CRM'e bildirir (POST /api/okul/kayit-iptal/). */
@@ -66,25 +68,24 @@ async function notifyCrmCancel(enrollmentId, reason) {
   if (!e) return { skipped: true };
   const s = db.prepare('SELECT crm_form_id FROM students WHERE id = ?').get(e.student_id);
   if (!s || !s.crm_form_id) return { skipped: true };
-  return crmPost('/api/okul/kayit-iptal/', {
+  return crmPost(e.campus_id, '/api/okul/kayit-iptal/', {
     crm_id: Number(s.crm_form_id),
     iptal_nedeni: reason || '',
   });
 }
 
-/** CRM'den aday listesini çeker (GET /api/okul/adaylar/). Dönen adayları crm_candidates'e yazar. */
-async function pullCandidatesFromCrm() {
-  const { base, key } = crmConfig();
-  if (!base || !key) throw new Error('CRM taban adresi ve API anahtarı Parametreler sayfasından tanımlanmalı.');
-  let sayfa = 1, imported = 0, updated = 0, pages = 0;
-  const upsert = db.prepare(`
-    INSERT INTO crm_candidates (crm_form_id, first_name, last_name, tc_no, grade, parents_json, raw_json, status)
-    VALUES (@fid, @ad, @soyad, @tc, @sinif, @parents, @raw, 'BEKLIYOR')
-    ON CONFLICT(crm_form_id) DO UPDATE SET
-      first_name = excluded.first_name, last_name = excluded.last_name, tc_no = excluded.tc_no,
-      grade = excluded.grade, parents_json = excluded.parents_json, raw_json = excluded.raw_json,
-      updated_at = datetime('now')
-    WHERE crm_candidates.status != 'AKTARILDI'`);
+const upsertCandidate = () => db.prepare(`
+  INSERT INTO crm_candidates (crm_form_id, campus_code, first_name, last_name, tc_no, grade, parents_json, raw_json, status)
+  VALUES (@fid, @cc, @ad, @soyad, @tc, @sinif, @parents, @raw, 'BEKLIYOR')
+  ON CONFLICT(crm_form_id) DO UPDATE SET
+    campus_code = excluded.campus_code, first_name = excluded.first_name, last_name = excluded.last_name,
+    tc_no = excluded.tc_no, grade = excluded.grade, parents_json = excluded.parents_json,
+    raw_json = excluded.raw_json, updated_at = datetime('now')
+  WHERE crm_candidates.status != 'AKTARILDI'`);
+
+/** Tek kampüsün CRM anahtarıyla aday listesini çeker (GET /api/okul/adaylar/). */
+async function pullCampusCandidates(campus, base, key, upsert) {
+  let sayfa = 1, imported = 0, updated = 0;
   while (sayfa <= 100) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
@@ -93,26 +94,50 @@ async function pullCandidatesFromCrm() {
       const res = await fetch(`${base}/api/okul/adaylar/?sayfa=${sayfa}`, {
         headers: { 'X-Api-Key': key }, signal: controller.signal,
       });
-      if (!res.ok) throw new Error(`CRM ${res.status} döndürdü.`);
+      if (!res.ok) throw new Error(`${campus.name}: CRM ${res.status} döndürdü.`);
       data = await res.json();
     } finally { clearTimeout(timer); }
     const list = Array.isArray(data.adaylar) ? data.adaylar : [];
     for (const a of list) {
       const parents = [];
-      if (a.veli_adi) parents.push({ full_name: a.veli_adi, phone: String(a.veli_telefon || '') });
-      if (a.veli2_adi) parents.push({ full_name: a.veli2_adi, phone: String(a.veli2_telefon || '') });
+      if (a.veli_adi) parents.push({ full_name: a.veli_adi, phone: String(a.veli_telefon || ''), tc_no: String(a.veli_tc || '') });
+      if (a.veli2_adi) parents.push({ full_name: a.veli2_adi, phone: String(a.veli2_telefon || ''), tc_no: String(a.veli2_tc || '') });
       const info = upsert.run({
-        fid: String(a.id), ad: a.ad || '', soyad: a.soyad || '', tc: String(a.tc_kimlik || ''),
+        fid: String(a.id), cc: campus.code, ad: a.ad || '', soyad: a.soyad || '', tc: String(a.tc_kimlik || ''),
         sinif: String(a.sinif || ''), parents: JSON.stringify(parents), raw: JSON.stringify(a).slice(0, 20000),
       });
       if (info.changes) (info.lastInsertRowid ? imported++ : updated++);
     }
-    pages++;
     const totalPages = Number(data.sayfa_sayisi) || 1;
     if (sayfa >= totalPages || !list.length) break;
     sayfa++;
   }
-  return { pages, imported, updated };
+  return { imported, updated };
+}
+
+/**
+ * CRM'den aday çeker. campusId verilirse yalnız o kampüs; verilmezse CRM'i aktif
+ * tüm kampüsler için sırayla çeker. Her kampüs kendi CRM anahtarını kullanır.
+ */
+async function pullCandidatesFromCrm(campusId) {
+  const base = getSetting('crm_base_url', '').trim().replace(/\/+$/, '');
+  if (!base) throw new Error('CRM taban adresi Parametreler sayfasından tanımlanmalı.');
+  const campuses = campusId
+    ? db.prepare('SELECT id, code, name FROM campuses WHERE id = ?').all(campusId)
+    : db.prepare('SELECT id, code, name FROM campuses WHERE active = 1').all();
+  const upsert = upsertCandidate();
+  let imported = 0, updated = 0, pulled = 0;
+  const errors = [];
+  for (const c of campuses) {
+    const cfg = crmConfig(c.id);
+    if (!cfg.key || !cfg.active) continue;
+    try {
+      const r = await pullCampusCandidates(c, base, cfg.key, upsert);
+      imported += r.imported; updated += r.updated; pulled++;
+    } catch (e) { errors.push(e.message); }
+  }
+  if (!pulled && !errors.length) throw new Error('Aktif ve anahtarı tanımlı CRM kampüsü yok.');
+  return { campuses: pulled, imported, updated, errors };
 }
 
 module.exports = { notifyCrmEnrollment, notifyCrmCancel, pullCandidatesFromCrm };

@@ -4,13 +4,17 @@
 Sözleşme numarası yalnızca okul sisteminden üretilir. Okul sisteminde yalnızca
 **kayıtlı**, **mezun**, **kayıt sildiren** öğrenciler bulunur.
 
-İki ayrı API anahtarı vardır:
-- **Okul API Anahtarı**: CRM'in okul sistemine erişimi için. Okul sisteminde
-  Parametreler > CRM Entegrasyonu'ndan üretilir, CRM yöneticisine verilir.
-- **CRM API Anahtarı**: Okul sisteminin CRM'e erişimi için. CRM yöneticisinden
-  alınıp Parametreler > CRM Entegrasyonu > "CRM Taban Adresi/API Anahtarı"na girilir.
+Entegrasyon **kampüs bazlıdır**. CRM tabanı tüm kampüsler için ortaktır
+(`https://crm.topkapiokullari.com`), fakat her kampüsün **ayrı** anahtar çifti vardır:
+- **Okul API Anahtarı** (kampüs bazlı): CRM'in okul sistemine erişimi için. Okul
+  sisteminde Parametreler > CRM Entegrasyonu > ilgili kampüs > "Okul API Anahtarı
+  Üret" ile üretilir, CRM yöneticisine o kampüs için verilir.
+- **CRM API Anahtarı** (kampüs bazlı): Okul sisteminin CRM'e erişimi için. CRM
+  panelindeki kampüsün "CRM API Anahtarı" değeri alınıp okul sistemine o kampüs
+  için girilir. Okul→CRM bildirimlerinde ilgili öğrencinin kampüsünün anahtarı kullanılır.
 
-Tüm isteklerde `X-Api-Key` başlığı zorunludur. Header adı büyük/küçük harf duyarsızdır.
+Tüm isteklerde `X-Api-Key` başlığı zorunludur (büyük/küçük harf duyarsız).
+Anahtar yoksa **401**, geçersiz/pasifse **403** döner.
 
 ---
 

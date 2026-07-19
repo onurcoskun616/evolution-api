@@ -2484,80 +2484,79 @@ async function pageParameters() {
       const d = await api('/parameters/integration');
       const base = location.origin + '/api/integration';
       wrap.innerHTML = `
-        <div class="section-title" style="font-size:12px; margin-top:0">1) Okul → CRM erişimi (Topkapı CRM'e bildirim)</div>
         <div class="form-grid" style="max-width:720px">
-          <div class="field full"><label>CRM Taban Adresi</label>
-            <input id="pr-crm-url" value="${esc(d.crm_base_url)}" placeholder="https://crm.topkapiokullari.k12.tr"></div>
-          <div class="field full"><label>CRM API Anahtarı (X-Api-Key olarak gönderilir)</label>
-            <input id="pr-crm-key" value="${esc(d.crm_api_key)}" placeholder="CRM yöneticisinden alınan anahtar"></div>
+          <div class="field full"><label>CRM Taban Adresi (tüm kampüsler için ortak)</label>
+            <input id="pr-crm-url" value="${esc(d.crm_base_url)}" placeholder="https://crm.topkapiokullari.com"></div>
         </div>
-        <div class="flex mt">
-          <button class="btn sm secondary" id="pr-crm-pull">⬇️ CRM'den Adayları Çek</button>
-          <span class="spacer"></span>
-          <button class="btn sm" id="pr-crm-save">CRM Ayarını Kaydet</button>
-        </div>
+        <div class="flex mt"><span class="spacer"></span><button class="btn sm" id="pr-crm-base-save">Taban Adresi Kaydet</button></div>
         <p class="muted" style="font-size:11px; margin-top:6px">
-          Kesin kayıtta <code>POST {taban}/api/okul/kayit-sonucu/</code>, iptalde
-          <code>POST {taban}/api/okul/kayit-iptal/</code> otomatik çağrılır.</p>
+          Her kampüs için ayrı CRM anahtarı girilir. Kesin kayıtta <code>POST {taban}/api/okul/kayit-sonucu/</code>,
+          iptalde <code>POST {taban}/api/okul/kayit-iptal/</code>, o kampüsün CRM anahtarıyla otomatik çağrılır.</p>
+        <div class="flex mt"><button class="btn sm secondary" id="pr-crm-pull">⬇️ CRM'den Adayları Çek (aktif kampüsler)</button></div>
 
-        <div class="section-title mt" style="font-size:12px">2) CRM → Okul erişimi (Okul API Anahtarı)</div>
-        <p class="muted" style="font-size:11.5px; margin-bottom:8px">
-          Bu anahtarı CRM yöneticisine verin. CRM, aday gönderirken
-          <code>POST ${esc(base)}/candidates</code> ucunu <code>X-Api-Key</code> başlığında bu anahtarla çağırır.</p>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Ad</th><th>Anahtar</th><th>Durum</th><th></th></tr></thead>
-          <tbody>${d.api_keys.map(k => `
-            <tr style="${!k.active ? 'opacity:.55' : ''}">
-              <td>${esc(k.name)}</td>
-              <td><code style="font-size:11px">${esc(k.key.slice(0, 12))}…${esc(k.key.slice(-4))}</code>
-                <button class="btn sm secondary" data-copy="${esc(k.key)}">Kopyala</button></td>
-              <td>${k.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}</td>
-              <td class="right"><button class="btn sm secondary" data-key-tgl="${k.id}" data-active="${k.active}">
-                ${k.active ? 'Pasifleştir' : 'Aktifleştir'}</button></td>
-            </tr>`).join('') || '<tr><td colspan="4" class="empty">Henüz Okul API anahtarı yok</td></tr>'}
-          </tbody></table></div>
-        <div class="flex mt">
-          <input id="pr-key-name" placeholder="Anahtar adı (örn: Topkapı CRM)" style="max-width:240px">
-          <button class="btn sm secondary" id="pr-key-add">+ Okul API Anahtarı Oluştur</button>
-        </div>`;
-      $('#pr-crm-save').onclick = async () => {
+        ${d.campuses.map(c => `
+          <div class="card" style="margin:14px 0 0; padding:14px; ${c.active ? '' : 'opacity:.75'}">
+            <div class="flex"><b>${esc(c.name)}</b> <span class="muted">(${esc(c.code)})</span>
+              ${c.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}
+              <span class="spacer"></span>
+              <label style="font-weight:400; text-transform:none; display:flex; gap:6px; align-items:center">
+                <input type="checkbox" style="width:auto" data-crm-active="${c.id}" ${c.active ? 'checked' : ''}> Aktif</label>
+            </div>
+            <div class="form-grid mt" style="max-width:900px">
+              <div class="field full"><label>CRM API Anahtarı (CRM'den alıp buraya girin)</label>
+                <input data-crm-key="${c.id}" value="${esc(c.crm_api_key)}" placeholder="CRM panelindeki 'CRM API Anahtarı'"></div>
+              <div class="field full"><label>Okul API Anahtarı (CRM'e verin) —
+                CRM bu anahtarla <code>POST ${esc(base)}/candidates</code> çağırır</label>
+                <div class="flex" style="gap:6px; flex-wrap:nowrap">
+                  <input value="${esc(c.okul_api_key || '')}" placeholder="Henüz üretilmedi" readonly style="flex:1; font-family:monospace; font-size:12px">
+                  ${c.okul_api_key ? `<button class="btn sm secondary" data-copy="${esc(c.okul_api_key)}">Kopyala</button>` : ''}
+                  <button class="btn sm secondary" data-okul-key="${c.id}">${c.okul_api_key ? 'Yenile' : 'Üret'}</button>
+                </div></div>
+            </div>
+            <div class="flex mt"><span class="spacer"></span>
+              <button class="btn sm" data-crm-campus-save="${c.id}">Kaydet</button></div>
+          </div>`).join('')}`;
+      $('#pr-crm-base-save').onclick = async () => {
         try {
-          await api('/parameters/integration/crm', {
-            method: 'PUT',
-            body: { crm_base_url: $('#pr-crm-url').value, crm_api_key: $('#pr-crm-key').value },
-          });
-          toast('CRM ayarı kaydedildi.', 'success');
+          await api('/parameters/integration/crm-base', { method: 'PUT', body: { crm_base_url: $('#pr-crm-url').value } });
+          toast('CRM taban adresi kaydedildi.', 'success');
         } catch (e) { toast(e.message, 'error'); }
       };
       $('#pr-crm-pull').onclick = async () => {
         const btn = $('#pr-crm-pull'); btn.disabled = true;
         try {
           const r = await api('/parameters/integration/pull-candidates', { method: 'POST' });
-          toast(`CRM'den ${r.imported} yeni, ${r.updated} güncellenen aday çekildi.`, 'success');
+          let msg = `${r.campuses} kampüsten ${r.imported} yeni, ${r.updated} güncellenen aday çekildi.`;
+          if (r.errors && r.errors.length) msg += ' Uyarılar: ' + r.errors.join('; ');
+          toast(msg, r.errors && r.errors.length ? 'error' : 'success');
         } catch (e) { toast(e.message, 'error'); }
         btn.disabled = false;
       };
-      $('#pr-key-add').onclick = async () => {
+      wrap.querySelectorAll('[data-crm-campus-save]').forEach(b => b.onclick = async () => {
+        const id = b.dataset.crmCampusSave;
         try {
-          const r = await api('/parameters/integration/keys', {
-            method: 'POST', body: { name: $('#pr-key-name').value.trim() },
+          await api('/parameters/integration/campus/' + id, {
+            method: 'PUT',
+            body: {
+              crm_api_key: wrap.querySelector(`[data-crm-key="${id}"]`).value,
+              active: wrap.querySelector(`[data-crm-active="${id}"]`).checked,
+            },
           });
-          toast('API anahtarı oluşturuldu. Kopyalayıp CRM tarafına girin.', 'success');
-          await navigator.clipboard?.writeText(r.key).catch(() => {});
-          loadIntegration();
+          toast('Kampüs CRM ayarı kaydedildi.', 'success'); loadIntegration();
         } catch (e) { toast(e.message, 'error'); }
-      };
-      wrap.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
-        try { await navigator.clipboard.writeText(b.dataset.copy); toast('Anahtar panoya kopyalandı.', 'success'); }
-        catch { toast('Kopyalanamadı: ' + b.dataset.copy, 'error'); }
       });
-      wrap.querySelectorAll('[data-key-tgl]').forEach(b => b.onclick = async () => {
+      wrap.querySelectorAll('[data-okul-key]').forEach(b => b.onclick = async () => {
+        if (b.textContent === 'Yenile' && !confirm('Mevcut Okul API anahtarı pasifleşecek ve CRM tarafında güncellenmesi gerekecek. Devam edilsin mi?')) return;
         try {
-          await api('/parameters/integration/keys/' + b.dataset.keyTgl, {
-            method: 'PUT', body: { active: b.dataset.active !== '1' },
-          });
+          const r = await api('/parameters/integration/campus/' + b.dataset.okulKey + '/okul-key', { method: 'POST' });
+          await navigator.clipboard?.writeText(r.key).catch(() => {});
+          toast('Okul API anahtarı üretildi ve panoya kopyalandı. CRM tarafına girin.', 'success');
           loadIntegration();
         } catch (e) { toast(e.message, 'error'); }
+      });
+      wrap.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+        try { await navigator.clipboard.writeText(b.dataset.copy); toast('Panoya kopyalandı.', 'success'); }
+        catch { toast('Kopyalanamadı.', 'error'); }
       });
     } catch (e) { /* yetki yoksa sessiz geç */ }
   }

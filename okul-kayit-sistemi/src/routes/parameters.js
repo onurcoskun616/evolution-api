@@ -578,51 +578,66 @@ router.post('/school-numbers/import',
     }
   });
 
-// ---- CRM Entegrasyon ayarları (API anahtarları + webhook) ----
+// ---- CRM Entegrasyon ayarları (kampüs bazlı) ----
+// Her kampüs için: CRM API Anahtarı (okul -> CRM), Okul API Anahtarı (CRM -> okul), aktiflik.
+// CRM taban adresi tüm kampüsler için ortaktır.
 router.get('/integration', requirePermission('settings.manage'), (req, res) => {
-  const keys = db.prepare('SELECT id, name, key, active, created_at FROM integration_keys ORDER BY id DESC').all();
-  res.json({
-    api_keys: keys,                              // Okul API Anahtarı (CRM -> Okul push için)
-    crm_base_url: getSetting('crm_base_url', ''), // CRM taban adresi (Okul -> CRM için)
-    crm_api_key: getSetting('crm_api_key', ''),   // CRM API Anahtarı
+  const campuses = db.prepare('SELECT id, code, name FROM campuses ORDER BY name').all().map(c => {
+    const okulKey = db.prepare('SELECT key FROM integration_keys WHERE campus_id = ? AND active = 1 ORDER BY id DESC LIMIT 1').get(c.id);
+    return {
+      ...c,
+      crm_api_key: getSetting(`crm_api_key_${c.id}`, ''),
+      okul_api_key: okulKey ? okulKey.key : '',
+      active: getSetting(`crm_active_${c.id}`, '') === '1',
+    };
   });
+  res.json({ crm_base_url: getSetting('crm_base_url', ''), campuses });
 });
 
-router.post('/integration/keys', requirePermission('settings.manage'), (req, res) => {
-  const name = String((req.body || {}).name || '').trim() || 'CRM Anahtarı';
-  const key = 'okl_' + crypto.randomBytes(24).toString('hex');
-  const info = db.prepare('INSERT INTO integration_keys (name, key) VALUES (?, ?)').run(name, key);
-  audit(req.user.id, 'CREATE', 'integration_key', info.lastInsertRowid, name);
-  res.json({ id: info.lastInsertRowid, key });
-});
-
-router.put('/integration/keys/:id', requirePermission('settings.manage'), (req, res) => {
-  const row = db.prepare('SELECT * FROM integration_keys WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Anahtar bulunamadı.' });
-  const active = (req.body || {}).active ? 1 : 0;
-  db.prepare('UPDATE integration_keys SET active = ? WHERE id = ?').run(active, row.id);
-  audit(req.user.id, 'UPDATE', 'integration_key', row.id, active ? 'aktif' : 'pasif');
+router.put('/integration/crm-base', requirePermission('settings.manage'), (req, res) => {
+  const url = String((req.body || {}).crm_base_url || '').trim();
+  if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'CRM adresi http(s) ile başlamalıdır.' });
+  setSetting('crm_base_url', url);
+  audit(req.user.id, 'UPDATE', 'settings', null, 'crm_base_url');
   res.json({ ok: true });
 });
 
-router.put('/integration/crm', requirePermission('settings.manage'), (req, res) => {
+// Kampüs bazlı CRM ayarı: CRM API anahtarı + aktiflik
+router.put('/integration/campus/:campusId', requirePermission('settings.manage'), (req, res) => {
+  const campusId = Number(req.params.campusId);
+  const campus = db.prepare('SELECT * FROM campuses WHERE id = ?').get(campusId);
+  if (!campus) return res.status(404).json({ error: 'Kampüs bulunamadı.' });
+  if (!assertCampusAccess(req, campusId)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
   const b = req.body || {};
-  if (b.crm_base_url !== undefined) {
-    const url = String(b.crm_base_url).trim();
-    if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'CRM adresi http(s) ile başlamalıdır.' });
-    setSetting('crm_base_url', url);
-  }
-  if (b.crm_api_key !== undefined) setSetting('crm_api_key', String(b.crm_api_key).trim());
-  audit(req.user.id, 'UPDATE', 'settings', null, 'crm_config');
+  if (b.crm_api_key !== undefined) setSetting(`crm_api_key_${campusId}`, String(b.crm_api_key).trim());
+  if (b.active !== undefined) setSetting(`crm_active_${campusId}`, b.active ? '1' : '');
+  audit(req.user.id, 'UPDATE', 'settings', campusId, 'crm_campus_config');
   res.json({ ok: true });
 });
 
-// CRM'den aday çek (GET /api/okul/adaylar/ -> crm_candidates)
+// Kampüs için Okul API anahtarı üret (CRM'e verilir). Eski anahtarlar pasifleşir.
+router.post('/integration/campus/:campusId/okul-key', requirePermission('settings.manage'), (req, res) => {
+  const campusId = Number(req.params.campusId);
+  const campus = db.prepare('SELECT * FROM campuses WHERE id = ?').get(campusId);
+  if (!campus) return res.status(404).json({ error: 'Kampüs bulunamadı.' });
+  if (!assertCampusAccess(req, campusId)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
+  const key = 'okl_' + crypto.randomBytes(24).toString('hex');
+  db.transaction(() => {
+    db.prepare('UPDATE integration_keys SET active = 0 WHERE campus_id = ?').run(campusId);
+    db.prepare('INSERT INTO integration_keys (name, key, campus_id) VALUES (?, ?, ?)')
+      .run(`${campus.name} Okul API`, key, campusId);
+  })();
+  audit(req.user.id, 'CREATE', 'integration_key', campusId, campus.name);
+  res.json({ key });
+});
+
+// CRM'den aday çek (aktif kampüsler için, her biri kendi anahtarıyla)
 router.post('/integration/pull-candidates', requirePermission('settings.manage'), async (req, res) => {
   try {
     const { pullCandidatesFromCrm } = require('../crm-notify');
-    const r = await pullCandidatesFromCrm();
-    audit(req.user.id, 'CRM_PULL', 'crm_candidate', null, `sayfa=${r.pages} eklendi=${r.imported} güncellendi=${r.updated}`);
+    const campusId = req.user.role === 'GENEL_MERKEZ' ? (Number((req.body || {}).campus_id) || null) : req.user.campus_id;
+    const r = await pullCandidatesFromCrm(campusId);
+    audit(req.user.id, 'CRM_PULL', 'crm_candidate', null, `kampüs=${r.campuses} eklendi=${r.imported} güncellendi=${r.updated}`);
     res.json(r);
   } catch (e) {
     res.status(400).json({ error: e.message });

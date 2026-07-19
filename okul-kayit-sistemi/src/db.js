@@ -263,6 +263,12 @@ if (!paCols.includes('is_guardian')) {
   `);
 }
 
+// integration_keys kampüs bazlı hale getirildi (geçiş)
+const ikCols = db.prepare('PRAGMA table_info(integration_keys)').all().map(c => c.name);
+if (ikCols.length && !ikCols.includes('campus_id')) {
+  db.exec('ALTER TABLE integration_keys ADD COLUMN campus_id INTEGER REFERENCES campuses(id)');
+}
+
 // Kalem bazlı indirim sınırı geçişi
 const cpCols = db.prepare('PRAGMA table_info(campus_prices)').all().map(c => c.name);
 if (!cpCols.includes('max_discount_rate')) {
@@ -346,6 +352,7 @@ CREATE TABLE IF NOT EXISTS integration_keys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   key TEXT NOT NULL UNIQUE,
+  campus_id INTEGER REFERENCES campuses(id),
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

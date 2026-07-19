@@ -16,10 +16,14 @@ const router = express.Router();
 // ---- API anahtarı doğrulama ----
 function authenticateApiKey(req, res, next) {
   const key = req.headers['x-api-key'] || req.query.api_key || '';
-  if (!key) return res.status(401).json({ error: 'X-API-Key başlığı zorunludur.' });
+  if (!key) return res.status(401).json({ error: 'X-Api-Key başlığı zorunludur.' });
   const row = db.prepare('SELECT * FROM integration_keys WHERE key = ? AND active = 1').get(String(key));
-  if (!row) return res.status(401).json({ error: 'Geçersiz veya pasif API anahtarı.' });
-  req.apiKey = row;
+  if (!row) return res.status(403).json({ error: 'Geçersiz veya pasif API anahtarı.' });
+  req.apiKey = row; // row.campus_id: anahtarın bağlı olduğu kampüs (null = genel)
+  if (row.campus_id) {
+    const c = db.prepare('SELECT code FROM campuses WHERE id = ?').get(row.campus_id);
+    req.apiKeyCampusCode = c ? c.code : null;
+  }
   next();
 }
 router.use(authenticateApiKey);
@@ -105,7 +109,9 @@ router.post('/candidates', (req, res) => {
     if (p.tc_no) { const pt = tcError(p.tc_no, label); if (pt) return res.status(400).json({ hata: pt, error: pt }); }
     if (p.phone) { const r = phoneField(p.phone, label); if (r.error) return res.status(400).json({ hata: r.error, error: r.error }); p.phone = r.value; }
   }
-  const campusCode = String(b.campus_code || '').trim().toUpperCase();
+  // Kampüs: anahtar kampüse bağlıysa onu kullan (CRM'in kampüs bazlı anahtarı belirleyicidir),
+  // değilse gövdedeki campus_code.
+  const campusCode = req.apiKeyCampusCode || String(b.campus_code || '').trim().toUpperCase();
   if (campusCode && !db.prepare('SELECT id FROM campuses WHERE code = ?').get(campusCode)) {
     return res.status(400).json({ hata: `Bilinmeyen kampüs kodu: ${campusCode}`, error: `Bilinmeyen kampüs kodu: ${campusCode}` });
   }
