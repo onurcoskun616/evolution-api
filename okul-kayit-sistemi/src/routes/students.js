@@ -82,6 +82,33 @@ router.get('/', requirePermission('student.view'), (req, res) => {
   res.json({ students: rows, total, page, page_size: pageSize, grades: GRADES });
 });
 
+// ---- TC ile öğrenci sorgulama (mükerrer kayıt uyarısı) ----
+router.get('/lookup/tc/:tc', requirePermission('student.view'), (req, res) => {
+  const tc = String(req.params.tc || '').trim();
+  if (!/^\d{11}$/.test(tc)) return res.json({ found: false });
+  const s = db.prepare(`
+    SELECT s.id, s.student_no, s.first_name, s.last_name, s.status, s.campus_id, c.name AS campus_name
+    FROM students s JOIN campuses c ON c.id = s.campus_id WHERE s.tc_no = ?`).get(tc);
+  if (!s) return res.json({ found: false });
+  res.json({ found: true, accessible: assertCampusAccess(req, s.campus_id), student: s });
+});
+
+// ---- TC ile veli sorgulama (mevcut veliyi getir, öğrencilerini listele) ----
+router.get('/parents/lookup/tc/:tc', requirePermission('student.create'), (req, res) => {
+  const tc = String(req.params.tc || '').trim();
+  if (!/^\d{11}$/.test(tc)) return res.json({ found: false });
+  const p = db.prepare(`
+    SELECT relation, full_name, tc_no, phone, phone2, email, occupation, workplace, education, address
+    FROM parents WHERE tc_no = ? ORDER BY id DESC LIMIT 1`).get(tc);
+  if (!p) return res.json({ found: false });
+  const students = db.prepare(`
+    SELECT DISTINCT s.id, s.student_no, s.first_name || ' ' || s.last_name AS name, s.campus_id, c.name AS campus_name
+    FROM parents pr JOIN students s ON s.id = pr.student_id JOIN campuses c ON c.id = s.campus_id
+    WHERE pr.tc_no = ? ORDER BY s.first_name`).all(tc)
+    .map(x => ({ ...x, accessible: assertCampusAccess(req, x.campus_id) }));
+  res.json({ found: true, parent: p, students });
+});
+
 // ---- Detay ----
 router.get('/:id', requirePermission('student.view'), (req, res) => {
   const s = db.prepare(`

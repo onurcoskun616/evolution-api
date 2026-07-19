@@ -143,6 +143,43 @@ document.addEventListener('focusout', e => {
       toast('Telefon numarası geçersiz. Örnek: 0532 111 22 33', 'error');
     } else { el.value = n; el.style.borderColor = ''; }
   }
+  // Öğrenci TC'si girildiğinde mükerrer kayıt sorgusu
+  if (el.matches('[data-student-dup]')) {
+    const v = el.value.trim();
+    if (!/^\d{11}$/.test(v) || !isValidTCClient(v)) return;
+    api('/students/lookup/tc/' + v).then(d => {
+      if (d.found) {
+        const s = d.student;
+        el.style.borderColor = 'var(--danger)';
+        if (d.accessible) {
+          toast(`Bu TC ile öğrenci zaten kayıtlı: ${s.first_name} ${s.last_name} (${s.student_no}). Aynı TC ile ikinci kayıt açılamaz.`, 'error');
+        } else {
+          toast(`Bu TC ile başka bir kampüste öğrenci kayıtlı (${s.student_no}). Aynı TC ile ikinci kayıt açılamaz.`, 'error');
+        }
+      }
+    }).catch(() => {});
+  }
+  // Veli TC'si girildiğinde mevcut veliyi bul ve alanları doldur
+  if (el.matches('[data-parent-tc]')) {
+    const v = el.value.trim();
+    if (!/^\d{11}$/.test(v) || !isValidTCClient(v)) return;
+    const pfx = el.getAttribute('data-parent-tc'); // alan öneki: anne / baba / op / pf
+    api('/students/parents/lookup/tc/' + v).then(d => {
+      if (!d.found) return;
+      const p = d.parent;
+      const set = (suf, val) => { const t = document.getElementById(`${pfx}-${suf}`); if (t && !t.value) t.value = val || ''; };
+      set('name', p.full_name); set('phone', p.phone); set('email', p.email); set('occ', p.occupation);
+      // edit modal alan adları farklı
+      const setId = (id, val) => { const t = document.getElementById(id); if (t && !t.value) t.value = val || ''; };
+      if (pfx === 'pf') {
+        setId('pf-name', p.full_name); setId('pf-phone', p.phone); setId('pf-phone2', p.phone2);
+        setId('pf-email', p.email); setId('pf-occ', p.occupation); setId('pf-work', p.workplace);
+        setId('pf-edu', p.education); setId('pf-address', p.address);
+      }
+      const kids = (d.students || []).filter(s => s.accessible).map(s => s.name).join(', ');
+      toast(`Kayıtlı veli bulundu: ${p.full_name}. Bilgileri getirildi.${kids ? ' Mevcut öğrenci(ler)i: ' + kids : ''}`, 'success');
+    }).catch(() => {});
+  }
 });
 
 function toast(msg, type = 'info') {
@@ -728,7 +765,7 @@ function studentFormFields(s = {}, opts = {}) {
     <div class="form-grid">
       <div class="field"><label>Adı *</label><input id="sf-first" value="${esc(s.first_name || '')}"></div>
       <div class="field"><label>Soyadı *</label><input id="sf-last" value="${esc(s.last_name || '')}"></div>
-      <div class="field"><label>TC Kimlik No</label><input id="sf-tc" data-tc maxlength="11" value="${esc(s.tc_no || '')}"></div>
+      <div class="field"><label>TC Kimlik No</label><input id="sf-tc" data-tc ${opts.checkTc ? 'data-student-dup' : ''} maxlength="11" value="${esc(s.tc_no || '')}"></div>
       <div class="field"><label>Doğum Tarihi</label><input type="date" id="sf-birth" value="${esc(s.birth_date || '')}"></div>
       <div class="field"><label>Doğum Yeri</label><input id="sf-bplace" value="${esc(s.birth_place || '')}"></div>
       <div class="field"><label>Cinsiyet</label><select id="sf-gender">
@@ -947,7 +984,7 @@ function parentFormModal(studentId, p, onSaved) {
       <div class="field"><label>Yakınlık *</label><select id="pf-rel">
         ${Object.entries(RELATION_LABELS).map(([v, l]) => `<option value="${v}" ${p?.relation === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="field"><label>Ad Soyad *</label><input id="pf-name" value="${esc(p?.full_name || '')}"></div>
-      <div class="field"><label>TC Kimlik No</label><input id="pf-tc" data-tc maxlength="11" value="${esc(p?.tc_no || '')}"></div>
+      <div class="field"><label>TC Kimlik No</label><input id="pf-tc" data-tc data-parent-tc="pf" maxlength="11" value="${esc(p?.tc_no || '')}"></div>
       <div class="field"><label>Telefon</label><input id="pf-phone" data-phone value="${esc(p?.phone || '')}"></div>
       <div class="field"><label>Telefon 2</label><input id="pf-phone2" data-phone value="${esc(p?.phone2 || '')}"></div>
       <div class="field"><label>E-posta</label><input id="pf-email" value="${esc(p?.email || '')}"></div>
@@ -1190,7 +1227,7 @@ async function pageNewEnrollment() {
           <div id="crm-results" class="mt"></div>
           <div id="crm-selected"></div>
         </div>
-        ${studentFormFields({}, { noPlacement: true })}
+        ${studentFormFields({}, { noPlacement: true, checkTc: true })}
         <div class="section-title">Sınıf Yerleşimi <span class="muted" style="font-weight:400; text-transform:none">· kayıt bilgilerine otomatik aktarılır</span></div>
         <div class="form-grid">
           <div class="field"><label>Kayıt Sınıfı *</label><select id="ne1-grade">
@@ -1202,7 +1239,7 @@ async function pageNewEnrollment() {
         <div class="section-title">Anne Bilgileri *</div>
         <div class="form-grid">
           <div class="field"><label>Ad Soyad *</label><input id="anne-name"></div>
-          <div class="field"><label>TC Kimlik No</label><input id="anne-tc" data-tc maxlength="11"></div>
+          <div class="field"><label>TC Kimlik No</label><input id="anne-tc" data-tc data-parent-tc="anne" maxlength="11"></div>
           <div class="field"><label>Cep Tel</label><input id="anne-phone" data-phone></div>
           <div class="field"><label>E-posta</label><input id="anne-email"></div>
           <div class="field"><label>Meslek</label><input id="anne-occ"></div>
@@ -1210,7 +1247,7 @@ async function pageNewEnrollment() {
         <div class="section-title">Baba Bilgileri *</div>
         <div class="form-grid">
           <div class="field"><label>Ad Soyad *</label><input id="baba-name"></div>
-          <div class="field"><label>TC Kimlik No</label><input id="baba-tc" data-tc maxlength="11"></div>
+          <div class="field"><label>TC Kimlik No</label><input id="baba-tc" data-tc data-parent-tc="baba" maxlength="11"></div>
           <div class="field"><label>Cep Tel</label><input id="baba-phone" data-phone></div>
           <div class="field"><label>E-posta</label><input id="baba-email"></div>
           <div class="field"><label>Meslek</label><input id="baba-occ"></div>
@@ -1231,7 +1268,7 @@ async function pageNewEnrollment() {
               ${['ABI', 'ABLA', 'DEDE', 'NINE', 'AMCA', 'HALA', 'DAYI', 'TEYZE', 'KUZEN', 'VASI', 'DIGER']
                 .map(r => `<option value="${r}">${RELATION_LABELS[r]}</option>`).join('')}</select></div>
             <div class="field"><label>Ad Soyad *</label><input id="op-name"></div>
-            <div class="field"><label>TC Kimlik No</label><input id="op-tc" data-tc maxlength="11"></div>
+            <div class="field"><label>TC Kimlik No</label><input id="op-tc" data-tc data-parent-tc="op" maxlength="11"></div>
             <div class="field"><label>Cep Tel *</label><input id="op-phone" data-phone></div>
             <div class="field"><label>E-posta</label><input id="op-email"></div>
             <div class="field"><label>Meslek</label><input id="op-occ"></div>
@@ -1349,11 +1386,13 @@ async function pageNewEnrollment() {
       const camp = CAMPUSES.find(x => x.code === c.campus_code);
       if (camp) $('#sf-campus').value = String(camp.id);
     }
-    // Veliler: anne/baba/diğer alanlarına dağıt
-    const anne = (c.parents || []).find(p => p.relation === 'ANNE');
-    const baba = (c.parents || []).find(p => p.relation === 'BABA');
+    // Veliler: CRM ilk veliyi anne, ikinci veliyi baba alanına aktarır
+    // (relation gelmişse ona öncelik verilir; personel gerekirse düzeltir)
+    const pl = c.parents || [];
+    const anne = pl.find(p => p.relation === 'ANNE') || pl[0];
+    const baba = pl.find(p => p.relation === 'BABA') || (pl[1] && pl[1] !== anne ? pl[1] : (pl.length > 1 ? pl[1] : null));
     if (anne) { set('#anne-name', anne.full_name); set('#anne-tc', anne.tc_no); set('#anne-phone', anne.phone); set('#anne-email', anne.email); set('#anne-occ', anne.occupation); }
-    if (baba) { set('#baba-name', baba.full_name); set('#baba-tc', baba.tc_no); set('#baba-phone', baba.phone); set('#baba-email', baba.email); set('#baba-occ', baba.occupation); }
+    if (baba && baba !== anne) { set('#baba-name', baba.full_name); set('#baba-tc', baba.tc_no); set('#baba-phone', baba.phone); set('#baba-email', baba.email); set('#baba-occ', baba.occupation); }
     $('#crm-selected').innerHTML = `<div class="card mb0 mt" style="padding:10px; background:#eef5ee">
       ✔ CRM adayı forma aktarıldı: <b>${esc(c.first_name)} ${esc(c.last_name)}</b> (Form: ${esc(c.crm_form_id)}).
       Kayıt tamamlanınca okul no, sözleşme no ve sınıf bilgileri CRM'e geri iletilecek.</div>`;

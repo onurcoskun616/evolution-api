@@ -979,10 +979,10 @@ async function main() {
     assert.equal(bad.status, 401);
   });
 
-  let candidateFormId = '9001'; // CRM crm_id (integer)
+  let candidateFormId = '90001'; // CRM crm_id (integer, seed disi)
   await test('Entegrasyon: CRM sözleşmesiyle aday gönderir (crm_id, ad, veli_adi...)', async () => {
     const r = await crmReq('POST', '/candidates', {
-      crm_id: 9001, campus_code: 'MRK',
+      crm_id: 90001, campus_code: 'MRK',
       ad: 'CRMden', soyad: 'Gelen', tc_kimlik: '12345678950', sinif: '9',
       il: 'İstanbul', ilce: 'Başakşehir', mahalle: 'Test Mah.',
       veli_adi: 'CRM Anne', veli_telefon: '5321112233',
@@ -1052,7 +1052,7 @@ async function main() {
 
   await test('Entegrasyon: aktarılmış aday CRM tekrar gönderse sessizce kabul (200)', async () => {
     const r = await crmReq('POST', '/candidates', {
-      crm_id: 9001, ad: 'Tekrar', soyad: 'Deneme',
+      crm_id: 90001, ad: 'Tekrar', soyad: 'Deneme',
     });
     assert.equal(r.status, 200, JSON.stringify(r.data));
     assert.equal(r.data.note, 'already_enrolled');
@@ -1113,6 +1113,48 @@ async function main() {
     const denied = await req('POST', '/parameters/school-numbers', {
       token: muhasebeToken, body: { campus_id: campusId, number: '900500' } });
     assert.equal(denied.status, 403);
+  });
+
+  await test('TC sorgu: öğrenci mükerrer TC engeli + lookup', async () => {
+    const tc = '31519915172'; // geçerli TC (algoritma)
+    const s1 = await req('POST', '/students', {
+      token: campusToken, body: { first_name: 'Tekil', last_name: 'Tc', campus_id: campusId, tc_no: tc },
+    });
+    assert.equal(s1.status, 200, JSON.stringify(s1.data));
+    // Lookup bulur
+    const lk = await req('GET', '/students/lookup/tc/' + tc, { token: campusToken });
+    assert.equal(lk.data.found, true);
+    assert.equal(lk.data.student.first_name, 'Tekil');
+    // Aynı TC ile ikinci öğrenci açılamaz
+    const s2 = await req('POST', '/students', {
+      token: campusToken, body: { first_name: 'İkinci', last_name: 'Tc', campus_id: campusId, tc_no: tc },
+    });
+    assert.equal(s2.status, 400);
+    assert.ok(/TC/i.test(s2.data.error), s2.data.error);
+  });
+
+  await test('TC sorgu: veli birden fazla öğrenciye bağlanabilir', async () => {
+    const veliTc = '55953359576'; // geçerli veli TC
+    const mk = (first) => req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: first, last_name: 'Kardeş', campus_id: campusId,
+        parents: [
+          { relation: 'ANNE', full_name: 'Ortak Anne', tc_no: veliTc, phone: '0532 777 88 99', is_guardian: true, is_payer: true },
+          { relation: 'BABA', full_name: 'Kardeş Baba', phone: '0533 777 88 99' },
+        ],
+      },
+    });
+    const a = await mk('Birinci'); assert.equal(a.status, 200, JSON.stringify(a.data));
+    const b = await mk('İkinci'); assert.equal(b.status, 200, JSON.stringify(b.data)); // aynı veli TC ile 2. öğrenci serbest
+    // Veli lookup: iki öğrenciyi de listeler, bilgileri getirir
+    const lk = await req('GET', '/students/parents/lookup/tc/' + veliTc, { token: campusToken });
+    assert.equal(lk.data.found, true);
+    assert.equal(lk.data.parent.full_name, 'Ortak Anne');
+    assert.equal(lk.data.parent.phone, '0532 777 88 99');
+    const names = lk.data.students.map(s => s.name);
+    assert.ok(names.some(n => n.includes('Birinci')) && names.some(n => n.includes('İkinci')),
+      'veli her iki kardeşe de bağlı görünmeli: ' + names.join(', '));
   });
 
   await test('Denetim kaydı tutulur', async () => {

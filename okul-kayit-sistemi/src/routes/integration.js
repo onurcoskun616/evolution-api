@@ -97,8 +97,8 @@ router.post('/candidates', (req, res) => {
   if (Array.isArray(b.parents) && b.parents.length) {
     parents = b.parents.map(p => ({ full_name: p.full_name, phone: p.phone, relation: p.relation, tc_no: p.tc_no }));
   } else {
-    if (b.veli_adi) parents.push({ full_name: String(b.veli_adi).trim(), phone: String(b.veli_telefon || '') });
-    if (b.veli2_adi) parents.push({ full_name: String(b.veli2_adi).trim(), phone: String(b.veli2_telefon || '') });
+    if (b.veli_adi) parents.push({ full_name: String(b.veli_adi).trim(), phone: String(b.veli_telefon || ''), tc_no: String(b.veli_tc ?? b.veli_tc_kimlik ?? '').trim() });
+    if (b.veli2_adi) parents.push({ full_name: String(b.veli2_adi).trim(), phone: String(b.veli2_telefon || ''), tc_no: String(b.veli2_tc ?? b.veli2_tc_kimlik ?? '').trim() });
   }
   for (const p of parents) {
     const label = `Veli (${p.full_name || '?'})`;
