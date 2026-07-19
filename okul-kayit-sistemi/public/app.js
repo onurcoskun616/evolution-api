@@ -2538,11 +2538,17 @@ async function pageParameters() {
       };
       wrap.querySelectorAll('[data-crm-campus-save]').forEach(b => b.onclick = async () => {
         const id = b.dataset.crmCampusSave;
+        const crmKey = wrap.querySelector(`[data-crm-key="${id}"]`).value.trim();
+        // Sık yapılan hata: bu alana Okul API anahtarı (okl_...) girmek. Bu alan CRM'in verdiği anahtarı ister.
+        if (crmKey.startsWith('okl_') &&
+            !confirm('Girdiğiniz değer bir "Okul API Anahtarı" (okl_...) gibi görünüyor. Bu alana CRM\'in verdiği "CRM API Anahtarı" girilmelidir (okl_ ile başlamaz). Yine de kaydedilsin mi?')) {
+          return;
+        }
         try {
           await api('/parameters/integration/campus/' + id, {
             method: 'PUT',
             body: {
-              crm_api_key: wrap.querySelector(`[data-crm-key="${id}"]`).value,
+              crm_api_key: crmKey,
               active: wrap.querySelector(`[data-crm-active="${id}"]`).checked,
             },
           });
