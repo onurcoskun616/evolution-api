@@ -631,6 +631,18 @@ router.post('/integration/campus/:campusId/okul-key', requirePermission('setting
   res.json({ key });
 });
 
+// CRM bağlantı tanısı: tek kampüs için ham yanıtı özetler (veri yazmaz)
+router.post('/integration/test/:campusId', requirePermission('settings.manage'), async (req, res) => {
+  try {
+    const { testCrmConnection } = require('../crm-notify');
+    const campusId = Number(req.params.campusId);
+    if (!assertCampusAccess(req, campusId)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
+    res.json(await testCrmConnection(campusId));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // CRM'den aday çek (aktif kampüsler için, her biri kendi anahtarıyla)
 router.post('/integration/pull-candidates', requirePermission('settings.manage'), async (req, res) => {
   try {

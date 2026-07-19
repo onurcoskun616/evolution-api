@@ -2514,7 +2514,9 @@ async function pageParameters() {
                 </div></div>
             </div>
             <div class="flex mt"><span class="spacer"></span>
+              <button class="btn sm secondary" data-crm-test="${c.id}">🔌 Bağlantıyı Test Et</button>
               <button class="btn sm" data-crm-campus-save="${c.id}">Kaydet</button></div>
+            <pre data-crm-test-out="${c.id}" style="display:none; white-space:pre-wrap; word-break:break-word; background:#f6f8fa; border-radius:8px; padding:10px; margin-top:10px; font-size:12px"></pre>
           </div>`).join('')}`;
       $('#pr-crm-base-save').onclick = async () => {
         try {
@@ -2544,6 +2546,25 @@ async function pageParameters() {
           });
           toast('Kampüs CRM ayarı kaydedildi.', 'success'); loadIntegration();
         } catch (e) { toast(e.message, 'error'); }
+      });
+      wrap.querySelectorAll('[data-crm-test]').forEach(b => b.onclick = async () => {
+        const id = b.dataset.crmTest;
+        const out = wrap.querySelector(`[data-crm-test-out="${id}"]`);
+        out.style.display = 'block'; out.textContent = 'Test ediliyor…'; b.disabled = true;
+        try {
+          const r = await api('/parameters/integration/test/' + id, { method: 'POST' });
+          if (r.ok) {
+            out.textContent = `✅ Bağlantı başarılı.\nURL: ${r.url}\nHTTP: ${r.http_status}\nAday dizisi alanı: "${r.aday_dizisi_alani}"\nBu sayfadaki aday sayısı: ${r.aday_sayisi}`;
+          } else if (r.error) {
+            out.textContent = `❌ ${r.error}` + (r.url ? `\nURL: ${r.url}` : '');
+          } else {
+            out.textContent = `⚠️ Bağlantı var ama aday okunamadı.\nURL: ${r.url}\nHTTP: ${r.http_status}\n`
+              + `Yanıt JSON mu: ${r.yanit_json_mi ? 'evet' : 'hayır'}\n`
+              + `Aday dizisi alanı: ${r.aday_dizisi_alani || 'BULUNAMADI (beklenen: "adaylar")'}\n`
+              + `Yanıttaki alanlar: [${(r.yanit_alanlari || []).join(', ')}]\n\nÖrnek yanıt:\n${r.ornek_yanit || ''}`;
+          }
+        } catch (e) { out.textContent = '❌ ' + e.message; }
+        b.disabled = false;
       });
       wrap.querySelectorAll('[data-okul-key]').forEach(b => b.onclick = async () => {
         if (b.textContent === 'Yenile' && !confirm('Mevcut Okul API anahtarı pasifleşecek ve CRM tarafında güncellenmesi gerekecek. Devam edilsin mi?')) return;
