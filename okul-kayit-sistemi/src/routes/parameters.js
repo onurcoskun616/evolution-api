@@ -3,8 +3,9 @@
  * Görüntüleme: tüm oturumlu kullanıcılar (kayıt formunun ihtiyacı).
  * Düzenleme: settings.manage izni (varsayılan: Genel Merkez; kullanıcı bazında verilebilir).
  */
+const crypto = require('crypto');
 const express = require('express');
-const { db, audit, money } = require('../db');
+const { db, audit, money, getSetting, setSetting } = require('../db');
 const { requirePermission, assertCampusAccess } = require('../auth');
 
 const router = express.Router();
@@ -472,6 +473,45 @@ router.post('/neighborhoods/import',
       res.status(400).json({ error: 'Excel dosyası okunamadı: ' + e.message });
     }
   });
+
+// ---- CRM Entegrasyon ayarları (API anahtarları + webhook) ----
+router.get('/integration', requirePermission('settings.manage'), (req, res) => {
+  const keys = db.prepare('SELECT id, name, key, active, created_at FROM integration_keys ORDER BY id DESC').all();
+  res.json({
+    api_keys: keys,
+    webhook_url: getSetting('crm_webhook_url', ''),
+    webhook_secret: getSetting('crm_webhook_secret', ''),
+  });
+});
+
+router.post('/integration/keys', requirePermission('settings.manage'), (req, res) => {
+  const name = String((req.body || {}).name || '').trim() || 'CRM Anahtarı';
+  const key = 'okl_' + crypto.randomBytes(24).toString('hex');
+  const info = db.prepare('INSERT INTO integration_keys (name, key) VALUES (?, ?)').run(name, key);
+  audit(req.user.id, 'CREATE', 'integration_key', info.lastInsertRowid, name);
+  res.json({ id: info.lastInsertRowid, key });
+});
+
+router.put('/integration/keys/:id', requirePermission('settings.manage'), (req, res) => {
+  const row = db.prepare('SELECT * FROM integration_keys WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Anahtar bulunamadı.' });
+  const active = (req.body || {}).active ? 1 : 0;
+  db.prepare('UPDATE integration_keys SET active = ? WHERE id = ?').run(active, row.id);
+  audit(req.user.id, 'UPDATE', 'integration_key', row.id, active ? 'aktif' : 'pasif');
+  res.json({ ok: true });
+});
+
+router.put('/integration/webhook', requirePermission('settings.manage'), (req, res) => {
+  const b = req.body || {};
+  if (b.webhook_url !== undefined) {
+    const url = String(b.webhook_url).trim();
+    if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Webhook URL http(s) ile başlamalıdır.' });
+    setSetting('crm_webhook_url', url);
+  }
+  if (b.webhook_secret !== undefined) setSetting('crm_webhook_secret', String(b.webhook_secret));
+  audit(req.user.id, 'UPDATE', 'settings', null, 'crm_webhook');
+  res.json({ ok: true });
+});
 
 module.exports = router;
 module.exports.getParams = getParams;

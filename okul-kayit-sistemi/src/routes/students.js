@@ -202,13 +202,14 @@ router.post('/', requirePermission('student.create'), (req, res) => {
     const info = db.prepare(`
       INSERT INTO students (student_no, tc_no, first_name, last_name, birth_date, birth_place, gender,
         blood_type, nationality, campus_id, department_id, grade, section, previous_school, previous_school_id,
-        health_notes, address, city, district, neighborhood, status, notes, created_by)
+        health_notes, address, city, district, neighborhood, status, notes, crm_form_id, created_by)
       VALUES (@student_no, @tc_no, @first_name, @last_name, @birth_date, @birth_place, @gender,
         @blood_type, @nationality, @campus_id, @department_id, @grade, @section, @previous_school, @previous_school_id,
-        @health_notes, @address, @city, @district, @neighborhood, @status, @notes, @created_by)`)
+        @health_notes, @address, @city, @district, @neighborhood, @status, @notes, @crm_form_id, @created_by)`)
       .run({
         department_id: departmentId,
         previous_school_id: previousSchoolId,
+        crm_form_id: String(b.crm_form_id || '').trim(),
         student_no: studentNo,
         tc_no: tc,
         first_name: String(b.first_name).trim(),
@@ -252,6 +253,30 @@ router.post('/', requirePermission('student.create'), (req, res) => {
   })();
   audit(req.user.id, 'CREATE', 'student', result.id, result.student_no);
   res.json(result);
+});
+
+// ---- CRM aday havuzu (kayıt ekranı için, oturum korumalı) ----
+router.get('/crm/candidates', requirePermission('enrollment.create'), (req, res) => {
+  const q = req.query || {};
+  const where = [`status = 'BEKLIYOR'`];
+  const params = {};
+  if (q.search) {
+    where.push(`(first_name || ' ' || last_name LIKE @s OR tc_no LIKE @s OR crm_form_id LIKE @s)`);
+    params.s = `%${String(q.search).trim()}%`;
+  }
+  // Kampüs kullanıcıları yalnız kendi kampüs koduna ait veya kampüssüz adayları görür
+  if (req.user.role !== 'GENEL_MERKEZ') {
+    const c = db.prepare('SELECT code FROM campuses WHERE id = ?').get(req.user.campus_id);
+    where.push(`(campus_code = @cc OR campus_code = '')`);
+    params.cc = c ? c.code : '';
+  }
+  const rows = db.prepare(`
+    SELECT id, crm_form_id, campus_code, first_name, last_name, tc_no, birth_date, gender,
+      grade, city, district, neighborhood, address, parents_json, notes, created_at
+    FROM crm_candidates WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT 100`).all(params);
+  res.json({
+    candidates: rows.map(r => ({ ...r, parents: JSON.parse(r.parents_json || '[]') })),
+  });
 });
 
 // ---- Güncelle ----

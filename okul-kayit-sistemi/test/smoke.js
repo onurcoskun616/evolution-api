@@ -948,6 +948,128 @@ async function main() {
     assert.equal(d.data.student.neighborhood, 'Test Mahallesi');
   });
 
+  await test('Sözleşme no: kayıtta 6 haneli üretilir, dönüşte gelir', async () => {
+    assert.ok(/^\d{6}$/.test(String((await req('GET', '/students/' + studentId, { token: campusToken }))
+      .data.enrollments.find(e => e.id === enrollmentId).contract_no)), '6 haneli sözleşme no bekleniyor');
+  });
+
+  let apiKey;
+  await test('Entegrasyon: API anahtarı oluşturma (yalnız yetkili)', async () => {
+    const denied = await req('POST', '/parameters/integration/keys', { token: campusToken, body: { name: 'X' } });
+    assert.equal(denied.status, 403);
+    const r = await req('POST', '/parameters/integration/keys', { token: hqToken, body: { name: 'Test CRM' } });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.ok(r.data.key.startsWith('okl_'));
+    apiKey = r.data.key;
+  });
+
+  async function crmReq(method, path, body) {
+    const res = await fetch(BASE + '/api/integration' + path, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: res.status, data: await res.json().catch(() => ({})) };
+  }
+
+  await test('Entegrasyon: API anahtarsız erişim reddedilir', async () => {
+    const res = await fetch(BASE + '/api/integration/candidates');
+    assert.equal(res.status, 401);
+    const bad = await fetch(BASE + '/api/integration/candidates', { headers: { 'X-API-Key': 'yanlis' } });
+    assert.equal(bad.status, 401);
+  });
+
+  let candidateFormId = 'TEST-FORM-9001';
+  await test('Entegrasyon: CRM aday gönderir, okul tarafında görünür', async () => {
+    const r = await crmReq('POST', '/candidates', {
+      crm_form_id: candidateFormId, campus_code: 'MRK',
+      first_name: 'CRMden', last_name: 'Gelen', tc_no: '12345678950', grade: '9',
+      city: 'İstanbul', district: 'Başakşehir', neighborhood: 'Test Mah.',
+      parents: [
+        { relation: 'ANNE', full_name: 'CRM Anne', tc_no: '10000000146', phone: '5321112233' },
+        { relation: 'BABA', full_name: 'CRM Baba', phone: '05331112233' },
+      ],
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    // Okul kayıt ekranı aday havuzunda görür
+    const list = await req('GET', '/students/crm/candidates?search=CRMden', { token: campusToken });
+    const c = list.data.candidates.find(x => x.crm_form_id === candidateFormId);
+    assert.ok(c, 'aday okul tarafında görünmeli');
+    assert.equal(c.parents.length, 2);
+    assert.equal(c.parents[0].phone, '0532 111 22 33', 'telefon normalize edilmeli');
+  });
+
+  await test('Entegrasyon: geçersiz TC ile aday reddedilir', async () => {
+    const r = await crmReq('POST', '/candidates', {
+      crm_form_id: 'TEST-FORM-BAD', first_name: 'A', last_name: 'B', tc_no: '11111111111',
+    });
+    assert.equal(r.status, 400);
+  });
+
+  await test('Entegrasyon: adaydan kesin kayıt -> CRM sorgusuyla sözleşme no döner', async () => {
+    // Adayı forma çekip öğrenci + kayıt oluştur (crm_form_id ile)
+    const list = await req('GET', '/students/crm/candidates?search=CRMden', { token: campusToken });
+    const cand = list.data.candidates.find(x => x.crm_form_id === candidateFormId);
+    const s = await req('POST', '/students', {
+      token: campusToken,
+      body: {
+        first_name: cand.first_name, last_name: cand.last_name, campus_id: campusId,
+        city: cand.city, district: cand.district, neighborhood: cand.neighborhood,
+        crm_form_id: cand.crm_form_id,
+        parents: [
+          { relation: 'ANNE', full_name: 'CRM Anne', phone: '0532 111 22 33', is_guardian: true, is_payer: true },
+          { relation: 'BABA', full_name: 'CRM Baba', phone: '0533 111 22 33' },
+        ],
+      },
+    });
+    assert.equal(s.status, 200, JSON.stringify(s.data));
+    const e = await req('POST', '/enrollments', {
+      token: campusToken,
+      body: {
+        student_id: s.data.id, academic_year_id: activeYearId, ...freePlacement, grade: '9',
+        items: [{ fee_item_id: pricedItems[0].id }], installment_count: 5, first_due_date: '2026-09-15',
+      },
+    });
+    assert.equal(e.status, 200, JSON.stringify(e.data));
+    assert.ok(/^\d{6}$/.test(e.data.contract_no));
+    // CRM, form ID ile öğrenciyi sorgular
+    const crm = await crmReq('GET', '/students/' + candidateFormId);
+    assert.equal(crm.status, 200, JSON.stringify(crm.data));
+    assert.equal(crm.data.student.crm_form_id, candidateFormId);
+    assert.equal(crm.data.student.kayitlar[0].sozlesme_no, e.data.contract_no);
+    assert.ok(crm.data.student.okul_no.startsWith('MRK-'));
+    assert.equal(crm.data.student.kayitlar[0].sinif, '9');
+    // Aday aktarıldı olarak işaretlenmeli
+    const cList = await crmReq('GET', '/candidates?crm_form_id=' + candidateFormId);
+    assert.equal(cList.data.candidates[0].status, 'AKTARILDI');
+  });
+
+  await test('Entegrasyon: aktarılmış aday tekrar güncellenemez', async () => {
+    const r = await crmReq('POST', '/candidates', {
+      crm_form_id: candidateFormId, first_name: 'Tekrar', last_name: 'Deneme',
+    });
+    assert.equal(r.status, 409);
+  });
+
+  await test('Entegrasyon: kayıt akışı (enrollments) sözleşmeleri sayfalı listeler', async () => {
+    const r = await crmReq('GET', '/enrollments?after_id=0');
+    assert.equal(r.status, 200);
+    assert.equal(r.data.enrollments.length, 500, 'sayfa 500 kayıt döndürmeli');
+    assert.ok(r.data.enrollments.every(e => /^\d{6}$/.test(e.sozlesme_no)));
+    assert.ok(r.data.next_after_id > 0, 'sonraki sayfa imleci dönmeli');
+    // İmleçle ilerleyince yeni kayıtlar da gelir (artan id sıralı akış)
+    const r2 = await crmReq('GET', '/enrollments?after_id=' + r.data.next_after_id);
+    assert.equal(r2.status, 200);
+    assert.ok(r2.data.enrollments.length > 0);
+    assert.ok(r2.data.enrollments[0].id > r.data.next_after_id);
+  });
+
+  await test('Öğrenci durumları: sadece Kayıtlı/Mezun/Kayıt Sildi', async () => {
+    const meta = await req('GET', '/meta', { token: hqToken });
+    const vals = meta.data.student_statuses.map(s => s.value);
+    assert.deepEqual(vals.sort(), ['AKTIF', 'KAYIT_SILDI', 'MEZUN']);
+  });
+
   await test('Denetim kaydı tutulur', async () => {
     const r = await req('GET', '/audit', { token: hqToken });
     assert.equal(r.status, 200);

@@ -1,6 +1,7 @@
 const express = require('express');
 const { db, audit, money, today } = require('../db');
 const { requirePermission, assertCampusAccess, campusScope } = require('../auth');
+const { notifyCrmEnrollment } = require('../crm-notify');
 
 const router = express.Router();
 
@@ -8,6 +9,23 @@ const PAYMENT_METHODS = ['NAKIT', 'KREDI_KARTI', 'KMH', 'SENET', 'HAVALE_EFT', '
 const ENROLLMENT_TYPES = ['DIS_KAYIT', 'IC_KAYIT'];
 const { GRADES, MAX_CLASS_SIZE, SECTION_LETTERS } = require('./parameters');
 const { tcError, phoneField } = require('../validate');
+
+/**
+ * Benzersiz 6 haneli sözleşme numarası üretir (100000-999999).
+ * Çakışma olursa yeniden dener; havuz dolarsa hata verir.
+ */
+function nextContractNo() {
+  const exists = db.prepare('SELECT 1 FROM enrollments WHERE contract_no = ?');
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const n = String(Math.floor(100000 + Math.random() * 900000));
+    if (!exists.get(n)) return n;
+  }
+  // Yoğun çakışma: sıradaki boş numarayı tara
+  const max = db.prepare("SELECT MAX(CAST(contract_no AS INTEGER)) AS m FROM enrollments WHERE contract_no != ''").get().m || 99999;
+  const next = max + 1;
+  if (next > 999999) throw new Error('Sözleşme numarası havuzu doldu (6 hane).');
+  return String(next);
+}
 
 /**
  * Bölüm + sınıf + şube doğrulaması:
@@ -279,15 +297,16 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
     return res.status(400).json({ error: e.message });
   }
   const result = db.transaction(() => {
+    const contractNo = nextContractNo();
     const info = db.prepare(`
       INSERT INTO enrollments (student_id, academic_year_id, campus_id, enrollment_date, enrollment_type,
-        grade, department_id, section, list_fee, discount_rate, discount_amount, discount_reason, net_fee, down_payment,
+        grade, department_id, section, contract_no, list_fee, discount_rate, discount_amount, discount_reason, net_fee, down_payment,
         installment_count, default_payment_method, payer_name, payer_tc, payer_phone, notes, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(student.id, year.id, student.campus_id,
         b.enrollment_date || today(),
         ENROLLMENT_TYPES.includes(b.enrollment_type) ? b.enrollment_type : 'DIS_KAYIT',
-        placement.grade, placement.dept.id, placement.section,
+        placement.grade, placement.dept.id, placement.section, contractNo,
         fees.list, fees.discountRate, fees.discountAmount, b.discount_reason || '',
         fees.net, money(b.down_payment),
         plan.filter(p => p.seq_no > 0).length,
@@ -308,10 +327,18 @@ router.post('/', requirePermission('enrollment.create'), (req, res) => {
       insItem.run(enrollmentId, it.fee_item_id, it.name, it.unit_price, it.quantity, it.total,
         it.discount_rate, it.discount_amount, it.net_total);
     }
-    return enrollmentId;
+    // CRM adayı varsa aktarıldı olarak işaretle
+    if (student.crm_form_id) {
+      db.prepare(`UPDATE crm_candidates SET status = 'AKTARILDI', student_id = ?, updated_at = datetime('now')
+        WHERE crm_form_id = ?`).run(student.id, student.crm_form_id);
+    }
+    return { enrollmentId, contractNo };
   })();
-  audit(req.user.id, 'CREATE', 'enrollment', result, `${student.student_no} / ${year.name}`);
-  res.json({ id: result });
+  audit(req.user.id, 'CREATE', 'enrollment', result.enrollmentId,
+    `${student.student_no} / ${year.name} / Sözleşme ${result.contractNo}`);
+  // CRM'e kayıt bilgilerini geri yaz (best-effort, hata kayıt akışını engellemez)
+  notifyCrmEnrollment(result.enrollmentId).catch(() => {});
+  res.json({ id: result.enrollmentId, contract_no: result.contractNo });
 });
 
 // ---- Kayıt güncelle (ödemesiz alanlar + ödemesiz plan yeniden oluşturma) ----

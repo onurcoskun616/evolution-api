@@ -24,6 +24,8 @@ app.use('/api/payments', authenticate, require('./src/routes/payments'));
 app.use('/api/dashboard', authenticate, require('./src/routes/dashboard'));
 app.use('/api/reports', authenticate, require('./src/routes/reports'));
 app.use('/api/parameters', authenticate, require('./src/routes/parameters'));
+// CRM entegrasyonu (kendi X-API-Key doğrulaması var, oturum gerektirmez)
+app.use('/api/integration', require('./src/routes/integration'));
 
 // Form ve filtreler için sabitler
 app.get('/api/meta', authenticate, (req, res) => {
@@ -37,8 +39,8 @@ app.get('/api/meta', authenticate, (req, res) => {
       { value: 'IC_KAYIT', label: 'İç Kayıt (Kayıt Yenileme)' },
     ],
     student_statuses: [
-      { value: 'AKTIF', label: 'Aktif' }, { value: 'ADAY', label: 'Aday' },
-      { value: 'PASIF', label: 'Pasif' }, { value: 'MEZUN', label: 'Mezun' },
+      { value: 'AKTIF', label: 'Kayıtlı' },
+      { value: 'MEZUN', label: 'Mezun' },
       { value: 'KAYIT_SILDI', label: 'Kayıt Sildi' },
     ],
   });

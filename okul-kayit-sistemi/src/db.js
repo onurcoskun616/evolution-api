@@ -326,6 +326,55 @@ CREATE TABLE IF NOT EXISTS schools (
 CREATE INDEX IF NOT EXISTS idx_schools_city ON schools(city, district);
 `);
 
+// CRM entegrasyonu: API anahtarları ve aday havuzu
+db.exec(`
+CREATE TABLE IF NOT EXISTS integration_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  key TEXT NOT NULL UNIQUE,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS crm_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  crm_form_id TEXT NOT NULL UNIQUE,
+  campus_code TEXT DEFAULT '',
+  first_name TEXT NOT NULL,
+  last_name TEXT NOT NULL,
+  tc_no TEXT DEFAULT '',
+  birth_date TEXT DEFAULT '',
+  gender TEXT DEFAULT '',
+  grade TEXT DEFAULT '',
+  city TEXT DEFAULT '',
+  district TEXT DEFAULT '',
+  neighborhood TEXT DEFAULT '',
+  address TEXT DEFAULT '',
+  parents_json TEXT NOT NULL DEFAULT '[]',
+  notes TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'BEKLIYOR' CHECK (status IN ('BEKLIYOR','AKTARILDI','IPTAL')),
+  student_id INTEGER REFERENCES students(id),
+  raw_json TEXT DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_candidates_status ON crm_candidates(status);
+`);
+
+// Öğrenciye CRM form referansı, kayda sözleşme numarası
+const stCols3 = db.prepare('PRAGMA table_info(students)').all().map(c => c.name);
+if (!stCols3.includes('crm_form_id')) {
+  db.exec("ALTER TABLE students ADD COLUMN crm_form_id TEXT DEFAULT ''");
+}
+const enCols2 = db.prepare('PRAGMA table_info(enrollments)').all().map(c => c.name);
+if (!enCols2.includes('contract_no')) {
+  db.exec(`
+    ALTER TABLE enrollments ADD COLUMN contract_no TEXT DEFAULT '';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollments_contract
+      ON enrollments(contract_no) WHERE contract_no != '';
+  `);
+}
+
 // Öğrenciye önceki okul referansı ve mahalle alanı
 const stCols2 = db.prepare('PRAGMA table_info(students)').all().map(c => c.name);
 if (!stCols2.includes('previous_school_id')) {
@@ -369,4 +418,14 @@ function audit(userId, action, entity, entityId, detail) {
   auditStmt.run(userId || null, action, entity, entityId || null, detail || '');
 }
 
-module.exports = { db, money, today, audit, DATA_DIR };
+/** settings tablosu yardımcıları */
+function getSetting(key, fallback = '') {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  return row ? row.value : fallback;
+}
+function setSetting(key, value) {
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run(key, String(value ?? ''));
+}
+
+module.exports = { db, money, today, audit, DATA_DIR, getSetting, setSetting };

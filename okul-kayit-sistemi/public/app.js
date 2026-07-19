@@ -599,6 +599,7 @@ async function pageStudentDetail(id) {
     return `
     <div class="card">
       <h3 class="flex">📚 ${esc(e.academic_year_name)} Kaydı ${badge(e.status)}
+        ${e.contract_no ? `<span class="badge blue">Sözleşme No: ${esc(e.contract_no)}</span>` : ''}
         <span class="muted" style="font-weight:400; font-size:12.5px">· ${e.department_name ? esc(e.department_name) + ' · ' : ''}${esc(e.grade)}-${esc(e.section || '?')} · ${e.enrollment_type === 'DIS_KAYIT' ? 'Dış Kayıt' : e.enrollment_type === 'IC_KAYIT' ? 'İç Kayıt' : 'Nakil'} · ${fmtDate(e.enrollment_date)}</span>
         <span class="spacer"></span>
         ${can('payment.create') && e.status !== 'IPTAL' && e.balance > 0 ? `<button class="btn sm success" data-pay="${e.id}">💰 Tahsilat Al</button>` : ''}
@@ -1080,6 +1081,7 @@ function printReceipt(student, campus, enrollment, payment) {
         <div style="text-align:right">
           <div class="doc-title">TAHSİLAT MAKBUZU</div>
           <div class="muted">Makbuz No: <b>${esc(payment.receipt_no || '-')}</b></div>
+          ${enrollment.contract_no ? `<div class="muted">Sözleşme No: <b>${esc(enrollment.contract_no)}</b></div>` : ''}
           <div class="muted">Tarih: <b>${fmtDate(payment.payment_date)}</b></div>
         </div>
       </div>
@@ -1122,7 +1124,7 @@ function printSenetler(student, campus, enrollment, parents) {
       <div class="doc-head">
         <div class="doc-title">BONO<br><small style="font-weight:400; font-size:10.5px">(EMRE MUHARRER SENET)</small></div>
         <table style="width:auto; margin:0">
-          <tr><th>Senet No</th><td>${enrollment.id}-${inst.seq_no}</td>
+          <tr><th>Senet No</th><td>${enrollment.contract_no ? esc(enrollment.contract_no) + '-' : ''}${inst.seq_no}</td>
               <th>Tanzim Tarihi</th><td>${fmtDate(todayStr())}</td></tr>
           <tr><th>Vade Tarihi</th><td><b>${fmtDate(inst.due_date)}</b></th>
               <th>Tutar</th><td class="amount-big">${fmtTL(tutar)}</td></tr>
@@ -1177,6 +1179,17 @@ async function pageNewEnrollment() {
         <div id="ne-selected" class="mt"></div>
       </div>
       <div id="student-new" style="display:none">
+        <div class="card mb0" style="background:#f2f7ff; border-color:#c9dcf7; padding:12px; margin-bottom:14px">
+          <div class="flex">
+            <b>🔗 CRM'den Getir</b>
+            <span class="muted" style="font-size:12px">Ön kayıt/aday bilgilerini CRM'den çekerek formu otomatik doldurun</span>
+            <span class="spacer"></span>
+            <input id="crm-search" placeholder="Aday ara: ad, TC, form no" style="max-width:240px">
+            <button class="btn sm secondary" id="crm-search-btn" type="button">Ara</button>
+          </div>
+          <div id="crm-results" class="mt"></div>
+          <div id="crm-selected"></div>
+        </div>
         ${studentFormFields({}, { noPlacement: true })}
         <div class="section-title">Sınıf Yerleşimi <span class="muted" style="font-weight:400; text-transform:none">· kayıt bilgilerine otomatik aktarılır</span></div>
         <div class="form-grid">
@@ -1298,6 +1311,58 @@ async function pageNewEnrollment() {
   };
   $('#tab-existing').onclick = () => setMode('existing');
   $('#tab-new').onclick = () => setMode('new');
+
+  // ---- CRM aday getirme (yeni öğrenci sekmesi) ----
+  let selectedCrmFormId = '';
+  async function crmSearch() {
+    const term = $('#crm-search').value.trim();
+    try {
+      const d = await api('/students/crm/candidates?search=' + encodeURIComponent(term));
+      if (!$('#crm-results')) return;
+      $('#crm-results').innerHTML = d.candidates.length ? `
+        <div class="table-wrap"><table>
+          <tbody>${d.candidates.map(c => `
+            <tr class="clickable" data-crm="${c.id}">
+              <td><b>${esc(c.first_name)} ${esc(c.last_name)}</b></td>
+              <td>${esc(c.grade || '-')}. sınıf</td>
+              <td>${esc(c.city || '')} ${esc(c.district || '')}</td>
+              <td class="muted" style="font-size:11.5px">Form: ${esc(c.crm_form_id)}${c.campus_code ? ' · ' + esc(c.campus_code) : ''}</td>
+            </tr>`).join('')}</tbody></table></div>` :
+        '<div class="muted" style="padding:8px">Bekleyen aday bulunamadı.</div>';
+      $('#crm-results').querySelectorAll('[data-crm]').forEach(row => row.onclick = () => {
+        fillFromCandidate(d.candidates.find(c => c.id === Number(row.dataset.crm)));
+      });
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  function fillFromCandidate(c) {
+    if (!c) return;
+    selectedCrmFormId = c.crm_form_id;
+    const set = (id, v) => { const el = $(id); if (el) el.value = v || ''; };
+    set('#sf-first', c.first_name); set('#sf-last', c.last_name); set('#sf-tc', c.tc_no);
+    set('#sf-birth', c.birth_date);
+    if ($('#sf-gender')) $('#sf-gender').value = c.gender || '';
+    set('#sf-city', c.city); set('#sf-district', c.district); set('#sf-hood', c.neighborhood);
+    set('#sf-address', c.address);
+    if (c.grade && $('#ne1-grade')) { $('#ne1-grade').value = c.grade; }
+    // Kampüs (genel merkez için) aday kampüs koduna göre
+    if (isHQ() && c.campus_code && $('#sf-campus')) {
+      const camp = CAMPUSES.find(x => x.code === c.campus_code);
+      if (camp) $('#sf-campus').value = String(camp.id);
+    }
+    // Veliler: anne/baba/diğer alanlarına dağıt
+    const anne = (c.parents || []).find(p => p.relation === 'ANNE');
+    const baba = (c.parents || []).find(p => p.relation === 'BABA');
+    if (anne) { set('#anne-name', anne.full_name); set('#anne-tc', anne.tc_no); set('#anne-phone', anne.phone); set('#anne-email', anne.email); set('#anne-occ', anne.occupation); }
+    if (baba) { set('#baba-name', baba.full_name); set('#baba-tc', baba.tc_no); set('#baba-phone', baba.phone); set('#baba-email', baba.email); set('#baba-occ', baba.occupation); }
+    $('#crm-selected').innerHTML = `<div class="card mb0 mt" style="padding:10px; background:#eef5ee">
+      ✔ CRM adayı forma aktarıldı: <b>${esc(c.first_name)} ${esc(c.last_name)}</b> (Form: ${esc(c.crm_form_id)}).
+      Kayıt tamamlanınca okul no, sözleşme no ve sınıf bilgileri CRM'e geri iletilecek.</div>`;
+    $('#crm-results').innerHTML = '';
+    $('#crm-search').value = '';
+    if ($('#sf-campus')) loadItems();
+  }
+  $('#crm-search-btn').onclick = crmSearch;
+  $('#crm-search').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); crmSearch(); } });
 
   // ---- Ücret kalemleri (MEB ilan listesi, kalem bazlı indirim) ----
   let itemsState = [];
@@ -1692,6 +1757,7 @@ async function pageNewEnrollment() {
         }
         body.documents = [...document.querySelectorAll('#sf-docs [data-doc]:checked')]
           .map(cb => Number(cb.dataset.doc));
+        if (selectedCrmFormId) body.crm_form_id = selectedCrmFormId;
         // Ödeme sorumlusu alanları HER ZAMAN seçilen kişiden dolar (seçim belirleyicidir)
         const payerP = body.parents.find(x => x.is_payer);
         if (payerP) {
@@ -1735,7 +1801,7 @@ async function pageNewEnrollment() {
           notes: $('#ne-notes').value,
         },
       });
-      toast('Kayıt başarıyla oluşturuldu.', 'success');
+      toast(`Kayıt başarıyla oluşturuldu. Sözleşme No: ${enrollment.contract_no}`, 'success');
       location.hash = '#/ogrenci/' + studentId;
     } catch (e) { toast(e.message, 'error'); }
   };
@@ -2118,7 +2184,15 @@ async function pageParameters() {
           <input type="number" step="0.01" min="0" id="pr-max-amount"
             value="${d.limits.max_discount_amount ?? ''}" placeholder="Sınırsız" ${!editable ? 'disabled' : ''}></div>
       </div>
-      ${editable ? '<div class="flex mt"><span class="spacer"></span><button class="btn" id="pr-save">💾 Parametreleri Kaydet</button></div>' : ''}`;
+      ${editable ? '<div class="flex mt"><span class="spacer"></span><button class="btn" id="pr-save">💾 Parametreleri Kaydet</button></div>' : ''}
+
+      ${editable ? `
+      <div class="section-title mt">🔗 CRM Entegrasyonu</div>
+      <p class="muted" style="font-size:12.5px; margin-bottom:10px">
+        CRM yazılımı bu API anahtarıyla aday öğrenci gönderir ve kayıt sonuçlarını (okul no,
+        sözleşme no, sınıf/şube, kayıt tarihi) çeker. Webhook adresi girilirse her kesin kayıt
+        anında CRM'e otomatik bildirim de gönderilir.</p>
+      <div id="pr-integration"><div class="muted" style="padding:8px">Yükleniyor…</div></div>` : ''}`;
 
     if (!editable) return;
     $('#pr-save').onclick = async () => {
@@ -2357,8 +2431,79 @@ async function pageParameters() {
     const el = document.getElementById(id);
     if (el) el.onchange = load;
   });
+  // ---- CRM entegrasyon ayarları ----
+  async function loadIntegration() {
+    const wrap = $('#pr-integration');
+    if (!wrap) return;
+    try {
+      const d = await api('/parameters/integration');
+      const base = location.origin + '/api/integration';
+      wrap.innerHTML = `
+        <div class="form-grid" style="max-width:720px">
+          <div class="field full"><label>Webhook URL (CRM'in dinlediği adres)</label>
+            <input id="pr-webhook-url" value="${esc(d.webhook_url)}" placeholder="https://crm.example.com/okul-webhook"></div>
+          <div class="field full"><label>Webhook Gizli Anahtarı (X-Webhook-Secret başlığında gönderilir)</label>
+            <input id="pr-webhook-secret" value="${esc(d.webhook_secret)}" placeholder="İsteğe bağlı doğrulama anahtarı"></div>
+        </div>
+        <div class="flex mt"><span class="spacer"></span><button class="btn sm" id="pr-webhook-save">Webhook Ayarını Kaydet</button></div>
+        <div class="section-title mt" style="font-size:12px">API Anahtarları</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Ad</th><th>Anahtar</th><th>Durum</th><th></th></tr></thead>
+          <tbody>${d.api_keys.map(k => `
+            <tr style="${!k.active ? 'opacity:.55' : ''}">
+              <td>${esc(k.name)}</td>
+              <td><code style="font-size:11px">${esc(k.key.slice(0, 12))}…${esc(k.key.slice(-4))}</code>
+                <button class="btn sm secondary" data-copy="${esc(k.key)}">Kopyala</button></td>
+              <td>${k.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}</td>
+              <td class="right"><button class="btn sm secondary" data-key-tgl="${k.id}" data-active="${k.active}">
+                ${k.active ? 'Pasifleştir' : 'Aktifleştir'}</button></td>
+            </tr>`).join('') || '<tr><td colspan="4" class="empty">Henüz API anahtarı yok</td></tr>'}
+          </tbody></table></div>
+        <div class="flex mt">
+          <input id="pr-key-name" placeholder="Anahtar adı (örn: DerCRM)" style="max-width:240px">
+          <button class="btn sm secondary" id="pr-key-add">+ API Anahtarı Oluştur</button>
+        </div>
+        <p class="muted mt" style="font-size:11.5px">
+          CRM uç noktaları (başlık: <code>X-API-Key</code>):<br>
+          • Aday gönder: <code>POST ${esc(base)}/candidates</code><br>
+          • Öğrenci sorgula: <code>GET ${esc(base)}/students/{crm_form_id}</code><br>
+          • Kayıt akışı: <code>GET ${esc(base)}/enrollments?after_id=0</code></p>`;
+      $('#pr-webhook-save').onclick = async () => {
+        try {
+          await api('/parameters/integration/webhook', {
+            method: 'PUT',
+            body: { webhook_url: $('#pr-webhook-url').value, webhook_secret: $('#pr-webhook-secret').value },
+          });
+          toast('Webhook ayarı kaydedildi.', 'success');
+        } catch (e) { toast(e.message, 'error'); }
+      };
+      $('#pr-key-add').onclick = async () => {
+        try {
+          const r = await api('/parameters/integration/keys', {
+            method: 'POST', body: { name: $('#pr-key-name').value.trim() },
+          });
+          toast('API anahtarı oluşturuldu. Kopyalayıp CRM tarafına girin.', 'success');
+          await navigator.clipboard?.writeText(r.key).catch(() => {});
+          loadIntegration();
+        } catch (e) { toast(e.message, 'error'); }
+      };
+      wrap.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+        try { await navigator.clipboard.writeText(b.dataset.copy); toast('Anahtar panoya kopyalandı.', 'success'); }
+        catch { toast('Kopyalanamadı: ' + b.dataset.copy, 'error'); }
+      });
+      wrap.querySelectorAll('[data-key-tgl]').forEach(b => b.onclick = async () => {
+        try {
+          await api('/parameters/integration/keys/' + b.dataset.keyTgl, {
+            method: 'PUT', body: { active: b.dataset.active !== '1' },
+          });
+          loadIntegration();
+        } catch (e) { toast(e.message, 'error'); }
+      });
+    } catch (e) { /* yetki yoksa sessiz geç */ }
+  }
+
   const origLoad = load;
-  load = async function () { await origLoad(); loadDocs(); loadSchools(); loadHoods(); };
+  load = async function () { await origLoad(); loadDocs(); loadSchools(); loadHoods(); loadIntegration(); };
   const backupBtn = $('#pr-backup');
   if (backupBtn) backupBtn.onclick = async () => {
     backupBtn.disabled = true;

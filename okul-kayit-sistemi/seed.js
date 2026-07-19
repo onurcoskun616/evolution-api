@@ -206,9 +206,13 @@ const insParent = db.prepare(`
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 const insEnrollment = db.prepare(`
   INSERT INTO enrollments (student_id, academic_year_id, campus_id, enrollment_date, enrollment_type,
-    grade, department_id, section, list_fee, discount_rate, discount_amount, discount_reason, net_fee, down_payment,
+    grade, department_id, section, contract_no, list_fee, discount_rate, discount_amount, discount_reason, net_fee, down_payment,
     installment_count, default_payment_method, payer_name, payer_phone, status, created_by)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+// Ardışık 6 haneli sözleşme numarası (seed'de deterministik: 100000'den başlar)
+let contractSeq = 100000;
+const nextContract = () => String(contractSeq++);
 const insInstallment = db.prepare(`
   INSERT INTO installments (enrollment_id, seq_no, label, due_date, amount, paid_amount, status)
   VALUES (?, ?, ?, ?, ?, ?, ?)`);
@@ -241,7 +245,7 @@ function createEnrollment(studentId, campus, yearId, grade, deptId, section, enr
   const reason = discountRate > 0 ? pick(DISCOUNT_REASONS.slice(3)) : '';
 
   const eid = Number(insEnrollment.run(studentId, yearId, campus.id, enrollDate, type, String(grade),
-    deptId, section, listFee, discountRate, discountAmount, reason, netFee, downPayment, count, method,
+    deptId, section, nextContract(), listFee, discountRate, discountAmount, reason, netFee, downPayment, count, method,
     parentName, parentPhone, 'AKTIF', userIds[1]).lastInsertRowid);
 
   const remaining = money(netFee - downPayment);
@@ -402,6 +406,29 @@ const seedAll = db.transaction(() => {
 });
 
 const total = seedAll();
+
+// ---- CRM entegrasyonu: örnek API anahtarı ve bekleyen adaylar ----
+db.prepare('INSERT INTO integration_keys (name, key) VALUES (?, ?)')
+  .run('Demo CRM Anahtarı', 'okl_demo_crm_key_0123456789abcdef');
+const insCand = db.prepare(`
+  INSERT INTO crm_candidates (crm_form_id, campus_code, first_name, last_name, tc_no, birth_date,
+    gender, grade, city, district, neighborhood, address, parents_json, notes)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+for (let i = 1; i <= 8; i++) {
+  const gender = rnd() < 0.5 ? 'ERKEK' : 'KIZ';
+  const first = gender === 'ERKEK' ? pick(MALE_NAMES) : pick(FEMALE_NAMES);
+  const last = pick(SURNAMES);
+  const camp = pick(campusIds);
+  const parents = [
+    { relation: 'ANNE', full_name: `${pick(FEMALE_NAMES)} ${last}`, tc_no: fakeTc(), phone: fakePhone(), occupation: pick(OCCUPATIONS) },
+    { relation: 'BABA', full_name: `${pick(MALE_NAMES)} ${last}`, tc_no: fakeTc(), phone: fakePhone(), occupation: pick(OCCUPATIONS) },
+  ];
+  insCand.run(`FORM-2026-${String(1000 + i)}`, camp.code, first, last, fakeTc(),
+    dateStr(2026 - 15, rint(1, 12), rint(1, 28)), gender, '9', 'İstanbul', camp.district,
+    'Merkez Mahallesi', `${rint(1, 99)}. Sok. No:${rint(1, 60)}`,
+    JSON.stringify(parents), 'CRM ön kayıt formundan geldi');
+}
+
 console.timeEnd('seed');
 
 const stats = {
