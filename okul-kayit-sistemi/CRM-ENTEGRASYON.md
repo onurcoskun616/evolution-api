@@ -85,6 +85,48 @@ kampüsünden farklı olabilir). Bildirim, gerçek kayıt kampüsünün CRM anah
 
 İstekler 10 sn zaman aşımıyla, CRM'den gelmemiş (crm_id'siz) öğrenciler için gönderilmez.
 
+### Kampüslerarası kayıt — örnek istek/yanıt (CRM ekibi için)
+
+Senaryo: Veli CRM'de **İstanbul OSB** kampüsü altında aday olarak açıldı (aday gönderimi
+İstanbul OSB'nin Okul API anahtarıyla yapıldı, `crm_id: 42`), fakat öğrenci fiilen
+**İkitelli OSB (MRK)** kampüsüne kesin kayıt oldu.
+
+Okul sisteminin CRM'e gönderdiği **istek** (İkitelli OSB'nin CRM anahtarıyla):
+```http
+POST /api/okul/kayit-sonucu/ HTTP/1.1
+Host: crm.topkapiokullari.com
+X-Api-Key: <İKİTELLİ_OSB_CRM_ANAHTARI>
+Content-Type: application/json
+
+{
+  "crm_id": 42,
+  "sozlesme_no": "100042",
+  "okul_no": "MRK-2026-00042",
+  "kayit_tarihi": "2026-09-01T00:00:00",
+  "sinif": "10", "bolum": "Bilişim Teknolojileri", "sube": "A",
+  "kampus": "İkitelli OSB", "kampus_kodu": "MRK",
+  "veli_adi": "Mehmet Yılmaz", "veli_telefon": "0532 111 22 33",
+  "veli2_adi": "Ayşe Yılmaz", "veli2_telefon": "0533 987 65 43",
+  "il": "İstanbul", "ilce": "Başakşehir", "mahalle": "Ziya Gökalp Mah."
+}
+```
+
+CRM'den beklenen **yanıt** (200 OK):
+```json
+{ "durum": "ok" }
+```
+
+**CRM ekibinin dikkat etmesi gerekenler:**
+1. `crm_id` (42) mevcut aday kartını işaret eder — **yeni kart açılmamalı**, bu kart
+   "kesin kayıt" durumuna güncellenmelidir.
+2. Kaydın hangi kampüsün "kesin kayıt listesi"nde görüneceği **`kampus_kodu`** alanına
+   göre belirlenmelidir (aday başlangıçta İstanbul OSB'de açılmış olsa da). Bu örnekte
+   öğrenci **İkitelli OSB (MRK)** listesinde yer almalıdır.
+3. `kampus_kodu` değerleri: `MRK` (İkitelli OSB), `IST` (İstanbul OSB), `ESN` (Esenyurt),
+   `KRC` (Kıraç), `CRL` (Çorlu). `kampus` alanı okunabilir kampüs adıdır.
+4. Bildirim, öğrencinin **fiilen kayıt olduğu** kampüsün CRM anahtarıyla gelir; anahtarın
+   ait olduğu kampüs ile `kampus_kodu` her zaman aynıdır.
+
 ---
 
 ## 3) Okul sisteminin sağladığı ek sorgu uçları (X-Api-Key: Okul anahtarı)
