@@ -474,6 +474,110 @@ router.post('/neighborhoods/import',
     }
   });
 
+// ---- Okul numarası havuzu (e-Okul boş numaralar) + sıralı sayaç ----
+function schoolNoScope(req) {
+  if (req.user.role === 'GENEL_MERKEZ') {
+    const id = Number(req.query.campus_id || (req.body || {}).campus_id);
+    return id || null;
+  }
+  return req.user.campus_id;
+}
+
+router.get('/school-numbers', (req, res) => {
+  const campusId = schoolNoScope(req);
+  if (!campusId) return res.status(400).json({ error: 'Kampüs seçimi zorunludur.' });
+  const stats = db.prepare(`
+    SELECT COUNT(*) AS total, SUM(CASE WHEN used = 0 THEN 1 ELSE 0 END) AS available
+    FROM school_number_pool WHERE campus_id = ?`).get(campusId);
+  const numbers = db.prepare(`
+    SELECT p.id, p.number, p.used, p.used_by, s.first_name || ' ' || s.last_name AS used_by_name
+    FROM school_number_pool p LEFT JOIN students s ON s.id = p.used_by
+    WHERE p.campus_id = ? ORDER BY p.used, p.id LIMIT 200`).all(campusId);
+  res.json({
+    campus_id: campusId,
+    pool_total: stats.total || 0,
+    pool_available: stats.available || 0,
+    sequential_last: getSetting(`okul_no_seq_${campusId}`, ''),
+    numbers,
+  });
+});
+
+router.post('/school-numbers', requirePermission('settings.manage'), (req, res) => {
+  const campusId = schoolNoScope(req);
+  const number = String((req.body || {}).number || '').trim();
+  if (!campusId || !number) return res.status(400).json({ error: 'Kampüs ve numara zorunludur.' });
+  if (!assertCampusAccess(req, campusId)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
+  if (!/^\d{1,15}$/.test(number)) return res.status(400).json({ error: 'Okul numarası yalnızca rakamlardan oluşmalıdır.' });
+  if (db.prepare('SELECT id FROM school_number_pool WHERE campus_id = ? AND number = ?').get(campusId, number)) {
+    return res.status(400).json({ error: 'Bu numara havuzda zaten var.' });
+  }
+  if (db.prepare('SELECT id FROM students WHERE student_no = ?').get(number)) {
+    return res.status(400).json({ error: 'Bu numara zaten bir öğrenciye verilmiş.' });
+  }
+  const info = db.prepare('INSERT INTO school_number_pool (campus_id, number) VALUES (?, ?)').run(campusId, number);
+  audit(req.user.id, 'CREATE', 'school_number', info.lastInsertRowid, number);
+  res.json({ id: info.lastInsertRowid });
+});
+
+router.delete('/school-numbers/:id', requirePermission('settings.manage'), (req, res) => {
+  const row = db.prepare('SELECT * FROM school_number_pool WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Numara bulunamadı.' });
+  if (!assertCampusAccess(req, row.campus_id)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
+  if (row.used) return res.status(400).json({ error: 'Kullanılmış numara havuzdan silinemez.' });
+  db.prepare('DELETE FROM school_number_pool WHERE id = ?').run(row.id);
+  audit(req.user.id, 'DELETE', 'school_number', row.id, row.number);
+  res.json({ ok: true });
+});
+
+router.put('/school-numbers/sequential', requirePermission('settings.manage'), (req, res) => {
+  const campusId = schoolNoScope(req);
+  if (!campusId) return res.status(400).json({ error: 'Kampüs seçimi zorunludur.' });
+  if (!assertCampusAccess(req, campusId)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
+  const v = String((req.body || {}).sequential_last ?? '').trim();
+  if (v && !/^\d{1,15}$/.test(v)) return res.status(400).json({ error: 'Son okul numarası yalnızca rakam olmalıdır.' });
+  setSetting(`okul_no_seq_${campusId}`, v);
+  audit(req.user.id, 'UPDATE', 'settings', campusId, `okul_no_seq=${v}`);
+  res.json({ ok: true });
+});
+
+/** Excel ile boş numara yükleme. A sütunu: okul numarası. Mükerrer/kullanılan atlanır. */
+router.post('/school-numbers/import',
+  express.raw({ type: () => true, limit: '15mb' }),
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const campusId = Number(req.query.campus_id) || (req.user.role !== 'GENEL_MERKEZ' ? req.user.campus_id : null);
+    if (!campusId) return res.status(400).json({ error: 'Kampüs seçimi zorunludur (campus_id).' });
+    if (!assertCampusAccess(req, campusId)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
+    try {
+      if (!req.body || !req.body.length) return res.status(400).json({ error: 'Dosya alınamadı.' });
+      const ExcelJS = require('exceljs');
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(req.body);
+      const ws = wb.worksheets[0];
+      if (!ws) return res.status(400).json({ error: 'Excel dosyasında sayfa bulunamadı.' });
+      let added = 0, skipped = 0, invalid = 0;
+      const inPool = db.prepare('SELECT id FROM school_number_pool WHERE campus_id = ? AND number = ?');
+      const usedByStudent = db.prepare('SELECT id FROM students WHERE student_no = ?');
+      const ins = db.prepare('INSERT INTO school_number_pool (campus_id, number) VALUES (?, ?)');
+      const cellText = c => String(c?.value?.result ?? c?.value ?? '').trim();
+      db.transaction(() => {
+        ws.eachRow(row => {
+          let n = cellText(row.getCell(1));
+          if (/okul\s*no|numara/i.test(n)) return; // başlık
+          n = n.replace(/\D/g, '');
+          if (!n) { invalid++; return; }
+          if (inPool.get(campusId, n) || usedByStudent.get(n)) { skipped++; return; }
+          ins.run(campusId, n);
+          added++;
+        });
+      })();
+      audit(req.user.id, 'IMPORT', 'school_number', campusId, `eklendi=${added} atlandı=${skipped}`);
+      res.json({ added, skipped, invalid });
+    } catch (e) {
+      res.status(400).json({ error: 'Excel dosyası okunamadı: ' + e.message });
+    }
+  });
+
 // ---- CRM Entegrasyon ayarları (API anahtarları + webhook) ----
 router.get('/integration', requirePermission('settings.manage'), (req, res) => {
   const keys = db.prepare('SELECT id, name, key, active, created_at FROM integration_keys ORDER BY id DESC').all();

@@ -1,5 +1,5 @@
 const express = require('express');
-const { db, audit, today } = require('../db');
+const { db, audit, today, getSetting, setSetting } = require('../db');
 const { requirePermission, campusScope, assertCampusAccess } = require('../auth');
 const { tcError, phoneField } = require('../validate');
 
@@ -7,8 +7,34 @@ const router = express.Router();
 
 const GRADES = ['9', '10', '11', '12'];
 
-/** Yeni öğrenci numarası üretir: <KAMPUS_KODU>-<YIL>-<SIRA> */
-function nextStudentNo(campusId) {
+/**
+ * Okul numarası atama önceliği (kampüs bazında):
+ *  1) e-Okul boş numara havuzunda kullanılmamış numara varsa (giriş sırasına göre) onu verir.
+ *  2) Havuz bitmişse "son okul no" sayacından (okul_no_seq_<campusId>) sıralı devam eder.
+ *  3) Sayaç da tanımlı değilse geriye dönük uyumlu <KAMPUS_KODU>-<YIL>-<SIRA> üretir.
+ * Not: Bu fonksiyon bir transaction içinde çağrılmalıdır (havuzu rezerve eder).
+ * Dönüş: { no, poolId } — poolId varsa öğrenci eklendikten sonra used_by set edilmelidir.
+ */
+function assignStudentNo(campusId) {
+  const exists = db.prepare('SELECT 1 FROM students WHERE student_no = ?');
+  // 1) Havuz
+  const poolRow = db.prepare(
+    `SELECT id, number FROM school_number_pool WHERE campus_id = ? AND used = 0 ORDER BY id LIMIT 1`
+  ).get(campusId);
+  if (poolRow && !exists.get(poolRow.number)) {
+    db.prepare('UPDATE school_number_pool SET used = 1 WHERE id = ?').run(poolRow.id);
+    return { no: poolRow.number, poolId: poolRow.id };
+  }
+  // 2) Sıralı sayaç
+  const seqKey = `okul_no_seq_${campusId}`;
+  const last = parseInt(getSetting(seqKey, ''), 10);
+  if (!isNaN(last)) {
+    let n = last + 1;
+    while (exists.get(String(n))) n++;
+    setSetting(seqKey, String(n));
+    return { no: String(n), poolId: null };
+  }
+  // 3) Geriye dönük uyumlu biçim
   const campus = db.prepare('SELECT code FROM campuses WHERE id = ?').get(campusId);
   const year = new Date().getFullYear();
   const prefix = `${campus.code}-${year}-`;
@@ -17,7 +43,7 @@ function nextStudentNo(campusId) {
   ).get(prefix + '%');
   let seq = 1;
   if (row) seq = parseInt(row.student_no.slice(prefix.length), 10) + 1;
-  return prefix + String(seq).padStart(5, '0');
+  return { no: prefix + String(seq).padStart(5, '0'), poolId: null };
 }
 
 // ---- Liste (arama, filtre, sayfalama) ----
@@ -198,7 +224,8 @@ router.post('/', requirePermission('student.create'), (req, res) => {
     if (!b.previous_school) b.previous_school = `${sch.name} (${sch.district}/${sch.city})`;
   }
   const result = db.transaction(() => {
-    const studentNo = nextStudentNo(Number(b.campus_id));
+    const assigned = assignStudentNo(Number(b.campus_id));
+    const studentNo = assigned.no;
     const info = db.prepare(`
       INSERT INTO students (student_no, tc_no, first_name, last_name, birth_date, birth_place, gender,
         blood_type, nationality, campus_id, department_id, grade, section, previous_school, previous_school_id,
@@ -233,6 +260,9 @@ router.post('/', requirePermission('student.create'), (req, res) => {
         created_by: req.user.id,
       });
     const studentId = info.lastInsertRowid;
+    if (assigned.poolId) {
+      db.prepare('UPDATE school_number_pool SET used_by = ? WHERE id = ?').run(studentId, assigned.poolId);
+    }
     const insDoc = db.prepare(`
       INSERT OR IGNORE INTO student_documents (student_id, document_type_id, received_by) VALUES (?, ?, ?)`);
     for (const docId of (Array.isArray(b.documents) ? b.documents : [])) {

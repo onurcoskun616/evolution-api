@@ -326,6 +326,20 @@ CREATE TABLE IF NOT EXISTS schools (
 CREATE INDEX IF NOT EXISTS idx_schools_city ON schools(city, district);
 `);
 
+// e-Okul numara havuzu: kampüs bazında boş okul numaraları
+db.exec(`
+CREATE TABLE IF NOT EXISTS school_number_pool (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campus_id INTEGER NOT NULL REFERENCES campuses(id),
+  number TEXT NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0,
+  used_by INTEGER REFERENCES students(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(campus_id, number)
+);
+CREATE INDEX IF NOT EXISTS idx_school_pool ON school_number_pool(campus_id, used, id);
+`);
+
 // CRM entegrasyonu: API anahtarları ve aday havuzu
 db.exec(`
 CREATE TABLE IF NOT EXISTS integration_keys (

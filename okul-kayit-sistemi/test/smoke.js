@@ -1070,6 +1070,44 @@ async function main() {
     assert.deepEqual(vals.sort(), ['AKTIF', 'KAYIT_SILDI', 'MEZUN']);
   });
 
+  await test('Okul no havuzu: havuz numaraları sırayla, bitince sıralı devam', async () => {
+    // Havuza 2 numara ekle + son okul no ayarla
+    await req('POST', '/parameters/school-numbers', { token: hqToken, body: { campus_id: campusId, number: '900001' } });
+    await req('POST', '/parameters/school-numbers', { token: hqToken, body: { campus_id: campusId, number: '900002' } });
+    await req('PUT', '/parameters/school-numbers/sequential', { token: hqToken, body: { campus_id: campusId, sequential_last: '950000' } });
+    const mkStudent = async (name) => {
+      const r = await req('POST', '/students', {
+        token: campusToken, body: { first_name: name, last_name: 'HavuzTest', campus_id: campusId },
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.data));
+      return r.data.student_no;
+    };
+    // İlk iki kayıt havuzdan (900001, 900002)
+    assert.equal(await mkStudent('Bir'), '900001');
+    assert.equal(await mkStudent('İki'), '900002');
+    // Havuz bitti -> sıralı sayaçtan (950001, 950002)
+    assert.equal(await mkStudent('Üç'), '950001');
+    assert.equal(await mkStudent('Dört'), '950002');
+    // Havuz durumu: 2 numara kullanılmış görünmeli
+    const st = await req('GET', '/parameters/school-numbers?campus_id=' + campusId, { token: hqToken });
+    assert.equal(st.data.pool_available, 0);
+    assert.equal(st.data.pool_total, 2);
+    assert.equal(st.data.sequential_last, '950002');
+  });
+
+  await test('Okul no havuzu: kullanılmış numara silinemez, mükerrer eklenemez', async () => {
+    const dup = await req('POST', '/parameters/school-numbers', { token: hqToken, body: { campus_id: campusId, number: '900001' } });
+    assert.equal(dup.status, 400);
+    const st = await req('GET', '/parameters/school-numbers?campus_id=' + campusId, { token: hqToken });
+    const usedRow = st.data.numbers.find(n => n.number === '900001');
+    const del = await req('DELETE', '/parameters/school-numbers/' + usedRow.id, { token: hqToken });
+    assert.equal(del.status, 400);
+    // Kampüs müdürü başka kampüse numara ekleyemez (yetki + kapsam)
+    const denied = await req('POST', '/parameters/school-numbers', {
+      token: muhasebeToken, body: { campus_id: campusId, number: '900500' } });
+    assert.equal(denied.status, 403);
+  });
+
   await test('Denetim kaydı tutulur', async () => {
     const r = await req('GET', '/audit', { token: hqToken });
     assert.equal(r.status, 200);

@@ -2173,6 +2173,13 @@ async function pageParameters() {
       </div>
       <div id="pr-hoods-table"></div>
 
+      <div class="section-title mt">Okul Numarası (e-Okul) Yönetimi</div>
+      <p class="muted" style="font-size:12.5px; margin-bottom:10px">
+        Kayıtta okul numarası şu sırayla verilir: <b>1)</b> e-Okul boş numara havuzundaki numaralar (giriş sırasıyla),
+        <b>2)</b> havuz bitince "son okul numarası"ndan itibaren sıralı. Havuzu Excel ile (A sütunu: numara) veya
+        elle doldurabilirsiniz. İkisi de boşsa numara <code>KOD-YIL-00001</code> biçiminde üretilir.</p>
+      <div id="pr-schoolno"><div class="muted" style="padding:8px">Yükleniyor…</div></div>
+
       <div class="section-title mt">Kampüs İndirim Sınırları</div>
       <p class="muted" style="font-size:12.5px; margin-bottom:10px">
         Kayıt sırasında bu sınırların üzerinde indirim yapılamaz. Boş bırakılan sınır uygulanmaz.</p>
@@ -2502,8 +2509,83 @@ async function pageParameters() {
     } catch (e) { /* yetki yoksa sessiz geç */ }
   }
 
+  // ---- Okul numarası havuzu ----
+  async function loadSchoolNo() {
+    const wrap = $('#pr-schoolno');
+    if (!wrap) return;
+    const cid = campusId();
+    if (!cid) { wrap.innerHTML = '<div class="muted" style="padding:8px">Kampüs seçin.</div>'; return; }
+    try {
+      const d = await api('/parameters/school-numbers?campus_id=' + cid);
+      const editable = can('settings.manage');
+      wrap.innerHTML = `
+        <div class="flex" style="gap:20px; margin-bottom:10px">
+          <span>Havuzdaki boş numara: <b>${d.pool_available}</b> / ${d.pool_total}</span>
+          <span>Son okul no (sıralı): <b>${esc(d.sequential_last || '—')}</b></span>
+        </div>
+        ${editable ? `
+        <div class="toolbar">
+          <div class="field"><label>Excel'den boş numara yükle (.xlsx, A sütunu)</label><input type="file" id="pr-sno-file" accept=".xlsx"></div>
+          <button class="btn sm" id="pr-sno-import">⬆️ Yükle</button>
+          <span class="spacer"></span>
+        </div>
+        <div class="toolbar">
+          <div class="field"><label>Tek numara ekle</label><input id="pr-sno-add-val" placeholder="Okul no" style="max-width:160px"></div>
+          <button class="btn sm secondary" id="pr-sno-add">+ Havuza Ekle</button>
+          <div class="field"><label>Son okul no (havuz bitince buradan devam)</label>
+            <input id="pr-sno-seq" value="${esc(d.sequential_last || '')}" placeholder="Örn: 250000" style="max-width:180px"></div>
+          <button class="btn sm secondary" id="pr-sno-seq-save">Kaydet</button>
+        </div>` : ''}
+        <div class="table-wrap"><table>
+          <thead><tr><th>Okul No</th><th>Durum</th>${editable ? '<th></th>' : ''}</tr></thead>
+          <tbody>${d.numbers.map(n => `
+            <tr style="${n.used ? 'opacity:.6' : ''}">
+              <td><b>${esc(n.number)}</b></td>
+              <td>${n.used ? `<span class="badge blue">Kullanıldı${n.used_by_name ? ' · ' + esc(n.used_by_name) : ''}</span>` : '<span class="badge green">Boş</span>'}</td>
+              ${editable ? `<td class="right">${!n.used ? `<button class="btn sm danger" data-sno-del="${n.id}">Sil</button>` : ''}</td>` : ''}
+            </tr>`).join('') || `<tr><td colspan="3" class="empty">Havuz boş — Excel ile yükleyin veya sıralı sayaç girin</td></tr>`}
+          </tbody></table></div>
+        ${d.numbers.length >= 200 ? '<p class="muted" style="font-size:11.5px">İlk 200 kayıt gösteriliyor.</p>' : ''}`;
+      if (!editable) return;
+      $('#pr-sno-import').onclick = async () => {
+        const file = $('#pr-sno-file').files[0];
+        if (!file) return toast('Önce bir .xlsx dosyası seçin.', 'error');
+        try {
+          const buf = await file.arrayBuffer();
+          const res = await fetch('/api/parameters/school-numbers/import?campus_id=' + cid, {
+            method: 'POST', headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/octet-stream' }, body: buf,
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Yükleme başarısız.');
+          toast(`Numara yükleme: ${data.added} eklendi, ${data.skipped} atlandı, ${data.invalid} geçersiz.`, 'success');
+          loadSchoolNo();
+        } catch (e) { toast(e.message, 'error'); }
+      };
+      $('#pr-sno-add').onclick = async () => {
+        const number = $('#pr-sno-add-val').value.trim();
+        if (!number) return toast('Numara girin.', 'error');
+        try {
+          await api('/parameters/school-numbers', { method: 'POST', body: { campus_id: cid, number } });
+          toast('Numara havuza eklendi.', 'success'); $('#pr-sno-add-val').value = ''; loadSchoolNo();
+        } catch (e) { toast(e.message, 'error'); }
+      };
+      $('#pr-sno-seq-save').onclick = async () => {
+        try {
+          await api('/parameters/school-numbers/sequential', {
+            method: 'PUT', body: { campus_id: cid, sequential_last: $('#pr-sno-seq').value.trim() },
+          });
+          toast('Son okul numarası kaydedildi.', 'success'); loadSchoolNo();
+        } catch (e) { toast(e.message, 'error'); }
+      };
+      wrap.querySelectorAll('[data-sno-del]').forEach(b => b.onclick = async () => {
+        try { await api('/parameters/school-numbers/' + b.dataset.snoDel, { method: 'DELETE' }); loadSchoolNo(); }
+        catch (e) { toast(e.message, 'error'); }
+      });
+    } catch (e) { /* yetki yoksa sessiz geç */ }
+  }
+
   const origLoad = load;
-  load = async function () { await origLoad(); loadDocs(); loadSchools(); loadHoods(); loadIntegration(); };
+  load = async function () { await origLoad(); loadDocs(); loadSchools(); loadHoods(); loadSchoolNo(); loadIntegration(); };
   const backupBtn = $('#pr-backup');
   if (backupBtn) backupBtn.onclick = async () => {
     backupBtn.disabled = true;
