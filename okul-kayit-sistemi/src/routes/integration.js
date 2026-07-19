@@ -77,49 +77,53 @@ function studentSnapshot(student) {
 }
 
 // ---- Aday gönder / güncelle (CRM -> Okul Kayıt) ----
+// Topkapı CRM sözleşmesi: { crm_id, ad, soyad, tc_kimlik, veli_adi, veli_telefon,
+//   veli2_adi, veli2_telefon, sinif, bolum, sube, mahalle, il, ilce }
+// (Geriye dönük olarak eski alan adları da kabul edilir.)
 router.post('/candidates', (req, res) => {
   const b = req.body || {};
-  const formId = String(b.crm_form_id || '').trim();
-  if (!formId) return res.status(400).json({ error: 'crm_form_id zorunludur.' });
-  if (!b.first_name || !b.last_name) return res.status(400).json({ error: 'first_name ve last_name zorunludur.' });
-  const tErr = tcError(b.tc_no, 'Öğrenci');
-  if (tErr) return res.status(400).json({ error: tErr });
-  const parents = Array.isArray(b.parents) ? b.parents : [];
+  // Alan eşleme: CRM adları öncelikli, yoksa eski adlar
+  const crmId = b.crm_id !== undefined ? String(b.crm_id).trim() : String(b.crm_form_id || '').trim();
+  if (!crmId) return res.status(400).json({ hata: 'crm_id zorunludur.', error: 'crm_id zorunludur.' });
+  const first = String(b.ad ?? b.first_name ?? '').trim();
+  const last = String(b.soyad ?? b.last_name ?? '').trim();
+  if (!first || !last) return res.status(400).json({ hata: 'ad ve soyad zorunludur.', error: 'ad ve soyad zorunludur.' });
+  const tc = String(b.tc_kimlik ?? b.tc_no ?? '').trim();
+  const tErr = tcError(tc, 'Öğrenci');
+  if (tErr) return res.status(400).json({ hata: tErr, error: tErr });
+
+  // Veli bilgileri: CRM veli_adi/veli2_adi veya eski parents[] dizisi
+  let parents = [];
+  if (Array.isArray(b.parents) && b.parents.length) {
+    parents = b.parents.map(p => ({ full_name: p.full_name, phone: p.phone, relation: p.relation, tc_no: p.tc_no }));
+  } else {
+    if (b.veli_adi) parents.push({ full_name: String(b.veli_adi).trim(), phone: String(b.veli_telefon || '') });
+    if (b.veli2_adi) parents.push({ full_name: String(b.veli2_adi).trim(), phone: String(b.veli2_telefon || '') });
+  }
   for (const p of parents) {
     const label = `Veli (${p.full_name || '?'})`;
-    const pt = tcError(p.tc_no, label);
-    if (pt) return res.status(400).json({ error: pt });
-    if (p.phone !== undefined) {
-      const r = phoneField(p.phone, label);
-      if (r.error) return res.status(400).json({ error: r.error });
-      p.phone = r.value;
-    }
+    if (p.tc_no) { const pt = tcError(p.tc_no, label); if (pt) return res.status(400).json({ hata: pt, error: pt }); }
+    if (p.phone) { const r = phoneField(p.phone, label); if (r.error) return res.status(400).json({ hata: r.error, error: r.error }); p.phone = r.value; }
   }
-  if (b.campus_code) {
-    const campus = db.prepare('SELECT id FROM campuses WHERE code = ?').get(String(b.campus_code).trim().toUpperCase());
-    if (!campus) return res.status(400).json({ error: `Bilinmeyen kampüs kodu: ${b.campus_code}` });
+  const campusCode = String(b.campus_code || '').trim().toUpperCase();
+  if (campusCode && !db.prepare('SELECT id FROM campuses WHERE code = ?').get(campusCode)) {
+    return res.status(400).json({ hata: `Bilinmeyen kampüs kodu: ${campusCode}`, error: `Bilinmeyen kampüs kodu: ${campusCode}` });
   }
-  const existing = db.prepare('SELECT * FROM crm_candidates WHERE crm_form_id = ?').get(formId);
+  const existing = db.prepare('SELECT * FROM crm_candidates WHERE crm_form_id = ?').get(crmId);
+  // Aktarılmış (kesin kayda dönmüş) aday: CRM yeniden gönderse de sessizce kabul (200), üzerine yazma
   if (existing && existing.status === 'AKTARILDI') {
-    return res.status(409).json({
-      error: 'Bu form zaten kesin kayda aktarılmış; aday güncellenemez.',
-      student: existing.student_id
-        ? studentSnapshot(db.prepare('SELECT * FROM students WHERE id = ?').get(existing.student_id))
-        : null,
-    });
+    return res.json({ status: 'received', note: 'already_enrolled' });
   }
   const fields = {
-    campus_code: String(b.campus_code || '').trim().toUpperCase(),
-    first_name: String(b.first_name).trim(),
-    last_name: String(b.last_name).trim(),
-    tc_no: String(b.tc_no || '').trim(),
+    campus_code: campusCode,
+    first_name: first, last_name: last, tc_no: tc,
     birth_date: b.birth_date || '',
     gender: ['ERKEK', 'KIZ'].includes(b.gender) ? b.gender : '',
-    grade: String(b.grade || ''),
-    city: b.city || '', district: b.district || '', neighborhood: b.neighborhood || '',
-    address: b.address || '',
+    grade: String(b.sinif ?? b.grade ?? ''),
+    city: b.il ?? b.city ?? '', district: b.ilce ?? b.district ?? '', neighborhood: b.mahalle ?? b.neighborhood ?? '',
+    address: b.adres ?? b.address ?? '',
     parents_json: JSON.stringify(parents),
-    notes: b.notes || '',
+    notes: [b.bolum ? 'Bölüm: ' + b.bolum : '', b.sube ? 'Şube: ' + b.sube : '', b.notes || ''].filter(Boolean).join(' · '),
     raw_json: JSON.stringify(b).slice(0, 20000),
   };
   if (existing) {
@@ -129,18 +133,18 @@ router.post('/candidates', (req, res) => {
         city = @city, district = @district, neighborhood = @neighborhood, address = @address,
         parents_json = @parents_json, notes = @notes, raw_json = @raw_json,
         status = 'BEKLIYOR', updated_at = datetime('now')
-      WHERE crm_form_id = @crm_form_id`).run({ ...fields, crm_form_id: formId });
-    audit(null, 'CRM_UPDATE', 'crm_candidate', existing.id, formId);
-    return res.json({ ok: true, id: existing.id, updated: true });
+      WHERE crm_form_id = @crm_form_id`).run({ ...fields, crm_form_id: crmId });
+    audit(null, 'CRM_UPDATE', 'crm_candidate', existing.id, crmId);
+    return res.json({ status: 'received', id: existing.id });
   }
   const info = db.prepare(`
     INSERT INTO crm_candidates (crm_form_id, campus_code, first_name, last_name, tc_no, birth_date,
       gender, grade, city, district, neighborhood, address, parents_json, notes, raw_json)
     VALUES (@crm_form_id, @campus_code, @first_name, @last_name, @tc_no, @birth_date,
       @gender, @grade, @city, @district, @neighborhood, @address, @parents_json, @notes, @raw_json)`)
-    .run({ ...fields, crm_form_id: formId });
-  audit(null, 'CRM_CREATE', 'crm_candidate', info.lastInsertRowid, formId);
-  res.json({ ok: true, id: info.lastInsertRowid, updated: false });
+    .run({ ...fields, crm_form_id: crmId });
+  audit(null, 'CRM_CREATE', 'crm_candidate', info.lastInsertRowid, crmId);
+  res.status(201).json({ status: 'received', id: info.lastInsertRowid });
 });
 
 // ---- Aday listesi ----

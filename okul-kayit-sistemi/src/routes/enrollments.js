@@ -1,7 +1,7 @@
 const express = require('express');
 const { db, audit, money, today } = require('../db');
 const { requirePermission, assertCampusAccess, campusScope } = require('../auth');
-const { notifyCrmEnrollment } = require('../crm-notify');
+const { notifyCrmEnrollment, notifyCrmCancel } = require('../crm-notify');
 
 const router = express.Router();
 
@@ -452,6 +452,7 @@ router.post('/:id/cancel', requirePermission('enrollment.cancel'), (req, res) =>
       .run(e.id);
   })();
   audit(req.user.id, 'CANCEL', 'enrollment', e.id, (req.body && req.body.reason) || '');
+  notifyCrmCancel(e.id, (req.body && req.body.reason) || '').catch(() => {});
   res.json({ ok: true });
 });
 

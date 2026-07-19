@@ -1,87 +1,85 @@
-# CRM ↔ Okul Kayıt Sistemi Entegrasyonu
+# Topkapı CRM ↔ Okul Kayıt Sistemi Entegrasyonu (v1.0)
 
-İş bölümü:
-- **Ön kayıt / aday takibi → CRM'de** yürütülür.
-- **Kesin kayıt → Okul Kayıt Sistemi'nde** yapılır. Bu sistemde yalnızca
-  **kayıtlı**, **mezun** ve **kayıt sildiren** öğrenciler bulunur.
+İş bölümü: **ön kayıt/aday takibi CRM'de**, **kesin kayıt Okul Kayıt Sistemi'nde**.
+Sözleşme numarası yalnızca okul sisteminden üretilir. Okul sisteminde yalnızca
+**kayıtlı**, **mezun**, **kayıt sildiren** öğrenciler bulunur.
 
-Tüm entegrasyon uçları `X-API-Key` başlığı ister. Anahtar, **Parametreler → CRM
-Entegrasyonu** ekranından oluşturulur (`okl_...` ile başlar).
+İki ayrı API anahtarı vardır:
+- **Okul API Anahtarı**: CRM'in okul sistemine erişimi için. Okul sisteminde
+  Parametreler > CRM Entegrasyonu'ndan üretilir, CRM yöneticisine verilir.
+- **CRM API Anahtarı**: Okul sisteminin CRM'e erişimi için. CRM yöneticisinden
+  alınıp Parametreler > CRM Entegrasyonu > "CRM Taban Adresi/API Anahtarı"na girilir.
 
-Temel adres: `https://<okul-kayit-adresiniz>/api/integration`
+Tüm isteklerde `X-Api-Key` başlığı zorunludur. Header adı büyük/küçük harf duyarsızdır.
+
+---
 
 ## 1) CRM → Okul: Aday gönderme
 
-Öğretmen/danışman CRM'de ön kaydı tamamlayınca adayı okul sistemine iletir.
+Okul sisteminin sağladığı uç. CRM "Okul Kayıt Sistemine Gönder" ile çağırır.
 
 ```
 POST /api/integration/candidates
-X-API-Key: okl_xxx
+X-Api-Key: <OKUL_API_ANAHTARI>
 Content-Type: application/json
 
 {
-  "crm_form_id": "FORM-2026-1008",     // CRM'deki tekil form kimliği (zorunlu)
-  "campus_code": "KRC",                 // hedef kampüs kodu (opsiyonel)
-  "first_name": "Emre", "last_name": "Sarı",
-  "tc_no": "12345678950",               // geçersizse reddedilir
-  "birth_date": "2011-04-10", "gender": "ERKEK", "grade": "9",
-  "city": "İstanbul", "district": "Esenyurt", "neighborhood": "Merkez Mah.",
-  "address": "...",
-  "parents": [
-    { "relation": "ANNE", "full_name": "Zeynep Sarı", "tc_no": "...", "phone": "5321112233" },
-    { "relation": "BABA", "full_name": "Eymen Sarı", "phone": "05461112233" }
-  ],
-  "notes": "..."
+  "crm_id": 42,                       // ZORUNLU — CRM öğrenci ID'si (kayıt/iptalde geri döner)
+  "ad": "Ahmet", "soyad": "Yılmaz",
+  "tc_kimlik": "12345678901",         // geçersizse 400
+  "veli_adi": "Mehmet Yılmaz", "veli_telefon": "5321234567",
+  "veli2_adi": "Ayşe Yılmaz", "veli2_telefon": "5339876543",
+  "sinif": "10", "bolum": "Sayısal", "sube": "A",
+  "mahalle": "Bağcılar Mah.", "il": "İstanbul", "ilce": "Fatih",
+  "campus_code": "MRK"                // opsiyonel — hedef kampüs
 }
 ```
 
-- Telefonlar otomatik `0532 111 22 33` biçimine getirilir; geçersiz TC/telefon reddedilir.
-- Aynı `crm_form_id` tekrar gönderilirse aday **güncellenir** (henüz kayda dönüşmediyse).
-- Kayıt personeli, **Yeni Kayıt → Yeni Öğrenci → CRM'den Getir** ile adayı arar,
-  seçer; form otomatik dolar. Kesin kayıt tamamlanınca aday `AKTARILDI` olur.
+- Başarı: **201 Created** (yeni) / **200 OK** (güncelleme) → gövde `{ "status": "received" }`.
+- Aktarılmış (kesin kayda dönmüş) aday tekrar gönderilirse **200** `{status:"received", note:"already_enrolled"}` (üzerine yazılmaz).
+- Eksik/geçersiz alanda **400** `{ "hata": "..." }`; anahtar yoksa **401**, geçersizse **403**.
+- Telefonlar `0532 111 22 33` biçimine normalize edilir.
 
-## 2) Okul → CRM: Kayıt sonucu
+Kayıt personeli: **Yeni Kayıt → Yeni Öğrenci → CRM'den Getir** ile adayı arar, seçer;
+form otomatik dolar. Alternatif: Parametreler'de **"CRM'den Adayları Çek"** düğmesi
+CRM'in `GET /api/okul/adaylar/` ucundan adayları toplu içeri alır.
 
-Kesin kayıt oluşunca okul no + 6 haneli sözleşme no + sınıf/bölüm/şube + kayıt
-tarihi CRM'e iki yoldan ulaşır:
+---
 
-**a) Webhook (anlık):** Parametreler'de webhook URL tanımlıysa her kayıtta:
-```
-POST <webhook_url>
-X-Webhook-Secret: <tanımlı secret>
-{ "event": "enrollment.created", "sent_at": "...", "data": { ...öğrenci... } }
-```
+## 2) Okul → CRM: Kayıt / iptal bildirimi
 
-**b) Sorgu (CRM çeker):**
-```
-GET /api/integration/students/{crm_form_id}     // tek öğrencinin tam görüntüsü
-GET /api/integration/enrollments?after_id=0      // sözleşme akışı (artan id, 500'lük sayfa)
-```
+Parametreler'de CRM Taban Adresi + CRM API Anahtarı tanımlıysa otomatik çağrılır.
 
-`data` / öğrenci görüntüsü örneği:
+**Kesin kayıt** → `POST {taban}/api/okul/kayit-sonucu/` (X-Api-Key: CRM anahtarı)
 ```json
 {
-  "crm_form_id": "FORM-2026-1008",
-  "okul_no": "KRC-2026-00042",
-  "ad": "Emre", "soyad": "Sarı", "durum": "AKTIF",
-  "kampus": "Kıraç", "bolum": "Bilişim Teknolojileri", "sinif": "9", "sube": "A",
-  "adres": { "il": "İstanbul", "ilce": "Esenyurt", "mahalle": "...", "adres": "..." },
-  "veliler": [ { "yakinlik": "ANNE", "ad_soyad": "...", "telefon": "0532 ...", "veli_mi": true, "odeme_sorumlusu_mu": true } ],
-  "kayitlar": [ {
-    "sozlesme_no": "100042", "ogretim_yili": "2026-2027", "kayit_tarihi": "2026-07-19",
-    "kayit_turu": "DIS_KAYIT", "sinif": "9", "sube": "A",
-    "net_ucret": 245300, "tahsil_edilen": 25000, "bakiye": 220300
-  } ]
+  "crm_id": 42,
+  "sozlesme_no": "100042",
+  "okul_no": "MRK-2026-00042",
+  "kayit_tarihi": "2026-09-01T00:00:00",
+  "sinif": "10", "bolum": "Bilişim Teknolojileri", "sube": "A",
+  "veli_adi": "...", "veli_telefon": "...", "veli2_adi": "...", "veli2_telefon": "...",
+  "il": "İstanbul", "ilce": "Fatih", "mahalle": "..."
 }
 ```
 
-## Diğer uçlar
-```
-GET    /api/integration/candidates?status=BEKLIYOR   // aday listesi
-DELETE /api/integration/candidates/{crm_form_id}     // aday iptal (kayda dönmemişse)
+**Kayıt iptali** → `POST {taban}/api/okul/kayit-iptal/`
+```json
+{ "crm_id": 42, "iptal_nedeni": "Veli tarafından iptal talep edildi" }
 ```
 
-## Sözleşme akışını senkron tutmak (öneri)
-CRM tarafında son işlenen `id` saklanır; periyodik olarak
-`GET /enrollments?after_id=<son_id>` çağrılır, dönen `next_after_id` bir sonraki
-tur için kullanılır. Böylece yalnızca yeni sözleşmeler çekilir.
+İstekler 10 sn zaman aşımıyla, CRM'den gelmemiş (crm_id'siz) öğrenciler için gönderilmez.
+
+---
+
+## 3) Okul sisteminin sağladığı ek sorgu uçları (X-Api-Key: Okul anahtarı)
+```
+GET  /api/integration/candidates?status=BEKLIYOR   // aday listesi
+GET  /api/integration/students/{crm_id}            // öğrencinin tam görüntüsü (okul no, sözleşme, sınıf...)
+GET  /api/integration/enrollments?after_id=0       // sözleşme akışı (artan id, 500'lük sayfa, next_after_id imleci)
+DELETE /api/integration/candidates/{crm_id}        // aday iptal (kayda dönmemişse)
+```
+
+## HTTP durum kodları
+200 OK · 201 Created · 400 (eksik/geçersiz, `hata` alanı) · 401 (anahtar yok) ·
+403 (anahtar geçersiz/pasif) · 404 (bulunamadı) · 405 (yanlış metod).

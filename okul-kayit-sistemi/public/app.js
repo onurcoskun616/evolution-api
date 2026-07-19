@@ -2194,11 +2194,10 @@ async function pageParameters() {
       ${editable ? '<div class="flex mt"><span class="spacer"></span><button class="btn" id="pr-save">💾 Parametreleri Kaydet</button></div>' : ''}
 
       ${editable ? `
-      <div class="section-title mt">🔗 CRM Entegrasyonu</div>
+      <div class="section-title mt">🔗 CRM Entegrasyonu (Topkapı CRM v1.0)</div>
       <p class="muted" style="font-size:12.5px; margin-bottom:10px">
-        CRM yazılımı bu API anahtarıyla aday öğrenci gönderir ve kayıt sonuçlarını (okul no,
-        sözleşme no, sınıf/şube, kayıt tarihi) çeker. Webhook adresi girilirse her kesin kayıt
-        anında CRM'e otomatik bildirim de gönderilir.</p>
+        İki yönlü entegrasyon: CRM aday gönderir/çekilir; kesin kayıt ve iptal sonucu
+        (okul no, sözleşme no, sınıf/bölüm/şube) CRM'e otomatik bildirilir.</p>
       <div id="pr-integration"><div class="muted" style="padding:8px">Yükleniyor…</div></div>` : ''}`;
 
     if (!editable) return;
@@ -2446,14 +2445,26 @@ async function pageParameters() {
       const d = await api('/parameters/integration');
       const base = location.origin + '/api/integration';
       wrap.innerHTML = `
+        <div class="section-title" style="font-size:12px; margin-top:0">1) Okul → CRM erişimi (Topkapı CRM'e bildirim)</div>
         <div class="form-grid" style="max-width:720px">
-          <div class="field full"><label>Webhook URL (CRM'in dinlediği adres)</label>
-            <input id="pr-webhook-url" value="${esc(d.webhook_url)}" placeholder="https://crm.example.com/okul-webhook"></div>
-          <div class="field full"><label>Webhook Gizli Anahtarı (X-Webhook-Secret başlığında gönderilir)</label>
-            <input id="pr-webhook-secret" value="${esc(d.webhook_secret)}" placeholder="İsteğe bağlı doğrulama anahtarı"></div>
+          <div class="field full"><label>CRM Taban Adresi</label>
+            <input id="pr-crm-url" value="${esc(d.crm_base_url)}" placeholder="https://crm.topkapiokullari.k12.tr"></div>
+          <div class="field full"><label>CRM API Anahtarı (X-Api-Key olarak gönderilir)</label>
+            <input id="pr-crm-key" value="${esc(d.crm_api_key)}" placeholder="CRM yöneticisinden alınan anahtar"></div>
         </div>
-        <div class="flex mt"><span class="spacer"></span><button class="btn sm" id="pr-webhook-save">Webhook Ayarını Kaydet</button></div>
-        <div class="section-title mt" style="font-size:12px">API Anahtarları</div>
+        <div class="flex mt">
+          <button class="btn sm secondary" id="pr-crm-pull">⬇️ CRM'den Adayları Çek</button>
+          <span class="spacer"></span>
+          <button class="btn sm" id="pr-crm-save">CRM Ayarını Kaydet</button>
+        </div>
+        <p class="muted" style="font-size:11px; margin-top:6px">
+          Kesin kayıtta <code>POST {taban}/api/okul/kayit-sonucu/</code>, iptalde
+          <code>POST {taban}/api/okul/kayit-iptal/</code> otomatik çağrılır.</p>
+
+        <div class="section-title mt" style="font-size:12px">2) CRM → Okul erişimi (Okul API Anahtarı)</div>
+        <p class="muted" style="font-size:11.5px; margin-bottom:8px">
+          Bu anahtarı CRM yöneticisine verin. CRM, aday gönderirken
+          <code>POST ${esc(base)}/candidates</code> ucunu <code>X-Api-Key</code> başlığında bu anahtarla çağırır.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Ad</th><th>Anahtar</th><th>Durum</th><th></th></tr></thead>
           <tbody>${d.api_keys.map(k => `
@@ -2464,25 +2475,28 @@ async function pageParameters() {
               <td>${k.active ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Pasif</span>'}</td>
               <td class="right"><button class="btn sm secondary" data-key-tgl="${k.id}" data-active="${k.active}">
                 ${k.active ? 'Pasifleştir' : 'Aktifleştir'}</button></td>
-            </tr>`).join('') || '<tr><td colspan="4" class="empty">Henüz API anahtarı yok</td></tr>'}
+            </tr>`).join('') || '<tr><td colspan="4" class="empty">Henüz Okul API anahtarı yok</td></tr>'}
           </tbody></table></div>
         <div class="flex mt">
-          <input id="pr-key-name" placeholder="Anahtar adı (örn: DerCRM)" style="max-width:240px">
-          <button class="btn sm secondary" id="pr-key-add">+ API Anahtarı Oluştur</button>
-        </div>
-        <p class="muted mt" style="font-size:11.5px">
-          CRM uç noktaları (başlık: <code>X-API-Key</code>):<br>
-          • Aday gönder: <code>POST ${esc(base)}/candidates</code><br>
-          • Öğrenci sorgula: <code>GET ${esc(base)}/students/{crm_form_id}</code><br>
-          • Kayıt akışı: <code>GET ${esc(base)}/enrollments?after_id=0</code></p>`;
-      $('#pr-webhook-save').onclick = async () => {
+          <input id="pr-key-name" placeholder="Anahtar adı (örn: Topkapı CRM)" style="max-width:240px">
+          <button class="btn sm secondary" id="pr-key-add">+ Okul API Anahtarı Oluştur</button>
+        </div>`;
+      $('#pr-crm-save').onclick = async () => {
         try {
-          await api('/parameters/integration/webhook', {
+          await api('/parameters/integration/crm', {
             method: 'PUT',
-            body: { webhook_url: $('#pr-webhook-url').value, webhook_secret: $('#pr-webhook-secret').value },
+            body: { crm_base_url: $('#pr-crm-url').value, crm_api_key: $('#pr-crm-key').value },
           });
-          toast('Webhook ayarı kaydedildi.', 'success');
+          toast('CRM ayarı kaydedildi.', 'success');
         } catch (e) { toast(e.message, 'error'); }
+      };
+      $('#pr-crm-pull').onclick = async () => {
+        const btn = $('#pr-crm-pull'); btn.disabled = true;
+        try {
+          const r = await api('/parameters/integration/pull-candidates', { method: 'POST' });
+          toast(`CRM'den ${r.imported} yeni, ${r.updated} güncellenen aday çekildi.`, 'success');
+        } catch (e) { toast(e.message, 'error'); }
+        btn.disabled = false;
       };
       $('#pr-key-add').onclick = async () => {
         try {

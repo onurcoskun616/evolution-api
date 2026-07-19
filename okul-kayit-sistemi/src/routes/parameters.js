@@ -582,9 +582,9 @@ router.post('/school-numbers/import',
 router.get('/integration', requirePermission('settings.manage'), (req, res) => {
   const keys = db.prepare('SELECT id, name, key, active, created_at FROM integration_keys ORDER BY id DESC').all();
   res.json({
-    api_keys: keys,
-    webhook_url: getSetting('crm_webhook_url', ''),
-    webhook_secret: getSetting('crm_webhook_secret', ''),
+    api_keys: keys,                              // Okul API Anahtarı (CRM -> Okul push için)
+    crm_base_url: getSetting('crm_base_url', ''), // CRM taban adresi (Okul -> CRM için)
+    crm_api_key: getSetting('crm_api_key', ''),   // CRM API Anahtarı
   });
 });
 
@@ -605,16 +605,28 @@ router.put('/integration/keys/:id', requirePermission('settings.manage'), (req, 
   res.json({ ok: true });
 });
 
-router.put('/integration/webhook', requirePermission('settings.manage'), (req, res) => {
+router.put('/integration/crm', requirePermission('settings.manage'), (req, res) => {
   const b = req.body || {};
-  if (b.webhook_url !== undefined) {
-    const url = String(b.webhook_url).trim();
-    if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Webhook URL http(s) ile başlamalıdır.' });
-    setSetting('crm_webhook_url', url);
+  if (b.crm_base_url !== undefined) {
+    const url = String(b.crm_base_url).trim();
+    if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'CRM adresi http(s) ile başlamalıdır.' });
+    setSetting('crm_base_url', url);
   }
-  if (b.webhook_secret !== undefined) setSetting('crm_webhook_secret', String(b.webhook_secret));
-  audit(req.user.id, 'UPDATE', 'settings', null, 'crm_webhook');
+  if (b.crm_api_key !== undefined) setSetting('crm_api_key', String(b.crm_api_key).trim());
+  audit(req.user.id, 'UPDATE', 'settings', null, 'crm_config');
   res.json({ ok: true });
+});
+
+// CRM'den aday çek (GET /api/okul/adaylar/ -> crm_candidates)
+router.post('/integration/pull-candidates', requirePermission('settings.manage'), async (req, res) => {
+  try {
+    const { pullCandidatesFromCrm } = require('../crm-notify');
+    const r = await pullCandidatesFromCrm();
+    audit(req.user.id, 'CRM_PULL', 'crm_candidate', null, `sayfa=${r.pages} eklendi=${r.imported} güncellendi=${r.updated}`);
+    res.json(r);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 module.exports = router;

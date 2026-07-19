@@ -979,42 +979,48 @@ async function main() {
     assert.equal(bad.status, 401);
   });
 
-  let candidateFormId = 'TEST-FORM-9001';
-  await test('Entegrasyon: CRM aday gönderir, okul tarafında görünür', async () => {
+  let candidateFormId = '9001'; // CRM crm_id (integer)
+  await test('Entegrasyon: CRM sözleşmesiyle aday gönderir (crm_id, ad, veli_adi...)', async () => {
     const r = await crmReq('POST', '/candidates', {
-      crm_form_id: candidateFormId, campus_code: 'MRK',
-      first_name: 'CRMden', last_name: 'Gelen', tc_no: '12345678950', grade: '9',
-      city: 'İstanbul', district: 'Başakşehir', neighborhood: 'Test Mah.',
-      parents: [
-        { relation: 'ANNE', full_name: 'CRM Anne', tc_no: '10000000146', phone: '5321112233' },
-        { relation: 'BABA', full_name: 'CRM Baba', phone: '05331112233' },
-      ],
+      crm_id: 9001, campus_code: 'MRK',
+      ad: 'CRMden', soyad: 'Gelen', tc_kimlik: '12345678950', sinif: '9',
+      il: 'İstanbul', ilce: 'Başakşehir', mahalle: 'Test Mah.',
+      veli_adi: 'CRM Anne', veli_telefon: '5321112233',
+      veli2_adi: 'CRM Baba', veli2_telefon: '05331112233',
     });
-    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.status, 201, JSON.stringify(r.data));
+    assert.equal(r.data.status, 'received');
     // Okul kayıt ekranı aday havuzunda görür
     const list = await req('GET', '/students/crm/candidates?search=CRMden', { token: campusToken });
     const c = list.data.candidates.find(x => x.crm_form_id === candidateFormId);
     assert.ok(c, 'aday okul tarafında görünmeli');
+    assert.equal(c.first_name, 'CRMden');
+    assert.equal(c.grade, '9');
     assert.equal(c.parents.length, 2);
     assert.equal(c.parents[0].phone, '0532 111 22 33', 'telefon normalize edilmeli');
   });
 
+  await test('Entegrasyon: eksik crm_id/ad reddedilir (400 hata alanı)', async () => {
+    const r = await crmReq('POST', '/candidates', { ad: 'A' });
+    assert.equal(r.status, 400);
+    assert.ok(r.data.hata || r.data.error, 'hata alanı dönmeli');
+  });
+
   await test('Entegrasyon: geçersiz TC ile aday reddedilir', async () => {
     const r = await crmReq('POST', '/candidates', {
-      crm_form_id: 'TEST-FORM-BAD', first_name: 'A', last_name: 'B', tc_no: '11111111111',
+      crm_id: 9999, ad: 'A', soyad: 'B', tc_kimlik: '11111111111',
     });
     assert.equal(r.status, 400);
   });
 
   await test('Entegrasyon: adaydan kesin kayıt -> CRM sorgusuyla sözleşme no döner', async () => {
-    // Adayı forma çekip öğrenci + kayıt oluştur (crm_form_id ile)
     const list = await req('GET', '/students/crm/candidates?search=CRMden', { token: campusToken });
     const cand = list.data.candidates.find(x => x.crm_form_id === candidateFormId);
     const s = await req('POST', '/students', {
       token: campusToken,
       body: {
         first_name: cand.first_name, last_name: cand.last_name, campus_id: campusId,
-        city: cand.city, district: cand.district, neighborhood: cand.neighborhood,
+        city: 'İstanbul', district: 'Başakşehir', neighborhood: 'Test Mah.',
         crm_form_id: cand.crm_form_id,
         parents: [
           { relation: 'ANNE', full_name: 'CRM Anne', phone: '0532 111 22 33', is_guardian: true, is_payer: true },
@@ -1032,7 +1038,7 @@ async function main() {
     });
     assert.equal(e.status, 200, JSON.stringify(e.data));
     assert.ok(/^\d{6}$/.test(e.data.contract_no));
-    // CRM, form ID ile öğrenciyi sorgular
+    // CRM, crm_id ile öğrenciyi sorgular
     const crm = await crmReq('GET', '/students/' + candidateFormId);
     assert.equal(crm.status, 200, JSON.stringify(crm.data));
     assert.equal(crm.data.student.crm_form_id, candidateFormId);
@@ -1044,11 +1050,12 @@ async function main() {
     assert.equal(cList.data.candidates[0].status, 'AKTARILDI');
   });
 
-  await test('Entegrasyon: aktarılmış aday tekrar güncellenemez', async () => {
+  await test('Entegrasyon: aktarılmış aday CRM tekrar gönderse sessizce kabul (200)', async () => {
     const r = await crmReq('POST', '/candidates', {
-      crm_form_id: candidateFormId, first_name: 'Tekrar', last_name: 'Deneme',
+      crm_id: 9001, ad: 'Tekrar', soyad: 'Deneme',
     });
-    assert.equal(r.status, 409);
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.note, 'already_enrolled');
   });
 
   await test('Entegrasyon: kayıt akışı (enrollments) sözleşmeleri sayfalı listeler', async () => {

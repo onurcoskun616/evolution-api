@@ -423,7 +423,7 @@ for (let i = 1; i <= 8; i++) {
     { relation: 'ANNE', full_name: `${pick(FEMALE_NAMES)} ${last}`, tc_no: fakeTc(), phone: fakePhone(), occupation: pick(OCCUPATIONS) },
     { relation: 'BABA', full_name: `${pick(MALE_NAMES)} ${last}`, tc_no: fakeTc(), phone: fakePhone(), occupation: pick(OCCUPATIONS) },
   ];
-  insCand.run(`FORM-2026-${String(1000 + i)}`, camp.code, first, last, fakeTc(),
+  insCand.run(String(9000 + i), camp.code, first, last, fakeTc(),
     dateStr(2026 - 15, rint(1, 12), rint(1, 28)), gender, '9', 'İstanbul', camp.district,
     'Merkez Mahallesi', `${rint(1, 99)}. Sok. No:${rint(1, 60)}`,
     JSON.stringify(parents), 'CRM ön kayıt formundan geldi');
