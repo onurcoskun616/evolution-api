@@ -1358,13 +1358,15 @@ async function pageNewEnrollment() {
       if (!$('#crm-results')) return;
       $('#crm-results').innerHTML = d.candidates.length ? `
         <div class="table-wrap"><table>
-          <tbody>${d.candidates.map(c => `
+          <tbody>${d.candidates.map(c => {
+            const veli = (c.parents || [])[0] || {};
+            return `
             <tr class="clickable" data-crm="${c.id}">
-              <td><b>${esc(c.first_name)} ${esc(c.last_name)}</b></td>
-              <td>${esc(c.grade || '-')}. sınıf</td>
-              <td>${esc(c.city || '')} ${esc(c.district || '')}</td>
-              <td class="muted" style="font-size:11.5px">Form: ${esc(c.crm_form_id)}${c.campus_code ? ' · ' + esc(c.campus_code) : ''}</td>
-            </tr>`).join('')}</tbody></table></div>` :
+              <td><b>${esc(c.first_name)} ${esc(c.last_name)}</b>
+                <div class="muted" style="font-size:11.5px">${esc(c.grade || '-')}. sınıf</div></td>
+              <td>${esc(veli.full_name || '—')}
+                <div class="muted" style="font-size:11.5px">${esc(veli.phone || 'telefon yok')}</div></td>
+            </tr>`; }).join('')}</tbody></table></div>` :
         '<div class="muted" style="padding:8px">Bekleyen aday bulunamadı.</div>';
       $('#crm-results').querySelectorAll('[data-crm]').forEach(row => row.onclick = () => {
         fillFromCandidate(d.candidates.find(c => c.id === Number(row.dataset.crm)));
@@ -1394,7 +1396,7 @@ async function pageNewEnrollment() {
     if (anne) { set('#anne-name', anne.full_name); set('#anne-tc', anne.tc_no); set('#anne-phone', anne.phone); set('#anne-email', anne.email); set('#anne-occ', anne.occupation); }
     if (baba && baba !== anne) { set('#baba-name', baba.full_name); set('#baba-tc', baba.tc_no); set('#baba-phone', baba.phone); set('#baba-email', baba.email); set('#baba-occ', baba.occupation); }
     $('#crm-selected').innerHTML = `<div class="card mb0 mt" style="padding:10px; background:#eef5ee">
-      ✔ CRM adayı forma aktarıldı: <b>${esc(c.first_name)} ${esc(c.last_name)}</b> (Form: ${esc(c.crm_form_id)}).
+      ✔ CRM adayı forma aktarıldı: <b>${esc(c.first_name)} ${esc(c.last_name)}</b>.
       Kayıt tamamlanınca okul no, sözleşme no ve sınıf bilgileri CRM'e geri iletilecek.</div>`;
     $('#crm-results').innerHTML = '';
     $('#crm-search').value = '';
