@@ -335,7 +335,14 @@ router.get('/crm/candidates', requirePermission('enrollment.create'), async (req
   const params = {};
   if (q.search) {
     const raw = String(q.search).trim();
-    const conds = [`first_name || ' ' || last_name LIKE @s`, `tc_no LIKE @s`, `crm_form_id LIKE @s`];
+    const conds = [
+      `first_name || ' ' || last_name LIKE @s`, // öğrenci ad-soyad
+      `tc_no LIKE @s`,                           // öğrenci TC
+      `crm_form_id LIKE @s`,                     // CRM form no
+      `city || ' ' || district || ' ' || neighborhood LIKE @s`, // adres
+      // Veli bilgileri (ad-soyad, e-posta, TC, telefon) parents_json içinde saklanır — hepsinde ara
+      `parents_json LIKE @s`,
+    ];
     params.s = `%${raw}%`;
     // Telefonla arama: parents_json içindeki veli telefonlarını biçimden bağımsız (boşluk/tire/parantez
     // temizlenmiş) eşle. En az 4 rakam girilirse çalışır (son haneyle de aranabilir).

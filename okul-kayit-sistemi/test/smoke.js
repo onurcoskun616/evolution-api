@@ -1010,6 +1010,15 @@ async function main() {
     }
   });
 
+  await test('Entegrasyon: adayı veli adından da arayabilir', async () => {
+    // CRM Anne / CRM Baba veli adlarıyla aday bulunmalı
+    for (const term of ['CRM Anne', 'CRM Baba', 'Anne']) {
+      const r = await req('GET', '/students/crm/candidates?search=' + encodeURIComponent(term), { token: campusToken });
+      const hit = r.data.candidates.find(x => x.crm_form_id === candidateFormId);
+      assert.ok(hit, `veli adı araması "${term}" adayı bulmalı`);
+    }
+  });
+
   await test('Entegrasyon: eksik crm_id/ad reddedilir (400 hata alanı)', async () => {
     const r = await crmReq('POST', '/candidates', { ad: 'A' });
     assert.equal(r.status, 400);

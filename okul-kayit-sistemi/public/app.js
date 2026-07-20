@@ -1221,7 +1221,7 @@ async function pageNewEnrollment() {
             <b>🔗 CRM'den Getir</b>
             <span class="muted" style="font-size:12px">Ön kayıt/aday bilgilerini CRM'den çekerek formu otomatik doldurun</span>
             <span class="spacer"></span>
-            <input id="crm-search" placeholder="Aday ara: ad soyad, TC, telefon" style="max-width:240px">
+            <input id="crm-search" placeholder="Ara: öğrenci/veli adı, TC, telefon, e-posta" style="max-width:260px">
             <button class="btn sm secondary" id="crm-search-btn" type="button">Ara</button>
           </div>
           <div id="crm-results" class="mt"></div>
