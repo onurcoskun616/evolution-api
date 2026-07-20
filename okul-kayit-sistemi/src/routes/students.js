@@ -312,8 +312,24 @@ router.post('/', requirePermission('student.create'), (req, res) => {
   res.json(result);
 });
 
+// Arama anında CRM'den taze aday çeker (en fazla 60 sn'de bir; hata olursa sessizce yerel havuzu kullanır).
+// Böylece kayıt personeli ayrı bir düğmeye basmadan güncel adayları görür.
+let lastCandidatePull = 0;
+async function refreshCandidatesIfStale() {
+  if (process.env.NODE_ENV === 'test') return;
+  const now = Date.now();
+  if (now - lastCandidatePull < 60000) return;
+  lastCandidatePull = now;
+  try {
+    if (!getSetting('crm_base_url', '').trim()) return;
+    const { pullCandidatesFromCrm } = require('../crm-notify');
+    await pullCandidatesFromCrm(null); // artımlı, tüm aktif kampüsler
+  } catch { /* sessiz: arama yerel havuzdan sürer */ }
+}
+
 // ---- CRM aday havuzu (kayıt ekranı için, oturum korumalı) ----
-router.get('/crm/candidates', requirePermission('enrollment.create'), (req, res) => {
+router.get('/crm/candidates', requirePermission('enrollment.create'), async (req, res) => {
+  await refreshCandidatesIfStale();
   const q = req.query || {};
   const where = [`status = 'BEKLIYOR'`];
   const params = {};

@@ -602,17 +602,31 @@ router.put('/integration/crm-base', requirePermission('settings.manage'), (req, 
   res.json({ ok: true });
 });
 
-// Kampüs bazlı CRM ayarı: CRM API anahtarı + aktiflik
-router.put('/integration/campus/:campusId', requirePermission('settings.manage'), (req, res) => {
+// Kampüs bazlı CRM ayarı: CRM API anahtarı + aktiflik.
+// Kaydedince, kampüs aktif ve anahtarlıysa adaylar hemen içeri alınır (düğmeye gerek kalmaz).
+router.put('/integration/campus/:campusId', requirePermission('settings.manage'), async (req, res) => {
   const campusId = Number(req.params.campusId);
   const campus = db.prepare('SELECT * FROM campuses WHERE id = ?').get(campusId);
   if (!campus) return res.status(404).json({ error: 'Kampüs bulunamadı.' });
   if (!assertCampusAccess(req, campusId)) return res.status(403).json({ error: 'Yetkisiz kampüs.' });
   const b = req.body || {};
+  const prevKey = getSetting(`crm_api_key_${campusId}`, '');
   if (b.crm_api_key !== undefined) setSetting(`crm_api_key_${campusId}`, String(b.crm_api_key).trim());
   if (b.active !== undefined) setSetting(`crm_active_${campusId}`, b.active ? '1' : '');
+  // Anahtar değiştiyse artımlı imleci sıfırla ki tüm adaylar baştan çekilsin
+  if (b.crm_api_key !== undefined && String(b.crm_api_key).trim() !== prevKey) setSetting(`crm_pull_since_${campusId}`, '');
   audit(req.user.id, 'UPDATE', 'settings', campusId, 'crm_campus_config');
-  res.json({ ok: true });
+  // Aday çekimini hemen tetikle
+  let pull = null;
+  const active = getSetting(`crm_active_${campusId}`, '') === '1';
+  const key = getSetting(`crm_api_key_${campusId}`, '').trim();
+  if (active && key && getSetting('crm_base_url', '').trim() && process.env.NODE_ENV !== 'test') {
+    try {
+      const { pullCandidatesFromCrm } = require('../crm-notify');
+      pull = await pullCandidatesFromCrm(campusId, { full: true });
+    } catch (e) { pull = { error: e.message }; }
+  }
+  res.json({ ok: true, pull });
 });
 
 // Kampüs için Okul API anahtarı üret (CRM'e verilir). Eski anahtarlar pasifleşir.

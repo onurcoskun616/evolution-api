@@ -2,6 +2,7 @@
  * Uçtan uca duman testi: sunucuyu başlatır, tüm ana akışları API üzerinden doğrular.
  * Çalıştırma: npm test  (önce `npm run seed` çalıştırılmış olmalı)
  */
+process.env.NODE_ENV = 'test'; // otomatik CRM çekimini testte devre dışı bırak (ağ çağrısı yapma)
 const assert = require('assert');
 const http = require('http');
 const { execSync } = require('child_process');

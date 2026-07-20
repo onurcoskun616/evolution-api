@@ -2494,7 +2494,8 @@ async function pageParameters() {
         <p class="muted" style="font-size:11px; margin-top:6px">
           Her kampüs için ayrı CRM anahtarı girilir. Kesin kayıtta <code>POST {taban}/api/okul/kayit-sonucu/</code>,
           iptalde <code>POST {taban}/api/okul/kayit-iptal/</code>, o kampüsün CRM anahtarıyla otomatik çağrılır.</p>
-        <div class="flex mt"><button class="btn sm secondary" id="pr-crm-pull">⬇️ CRM'den Adayları Çek (aktif kampüsler)</button></div>
+        <p class="muted" style="font-size:11px; margin-top:2px">
+          Adaylar otomatik çekilir: kampüs ayarı kaydedilince hemen, ayrıca kayıt ekranında arama yapıldığında güncellenir.</p>
 
         ${d.campuses.map(c => `
           <div class="card" style="margin:14px 0 0; padding:14px; ${c.active ? '' : 'opacity:.75'}">
@@ -2526,16 +2527,6 @@ async function pageParameters() {
           toast('CRM taban adresi kaydedildi.', 'success');
         } catch (e) { toast(e.message, 'error'); }
       };
-      $('#pr-crm-pull').onclick = async () => {
-        const btn = $('#pr-crm-pull'); btn.disabled = true;
-        try {
-          const r = await api('/parameters/integration/pull-candidates', { method: 'POST' });
-          let msg = `${r.campuses} kampüsten ${r.imported} yeni, ${r.updated} güncellenen aday çekildi.`;
-          if (r.errors && r.errors.length) msg += ' Uyarılar: ' + r.errors.join('; ');
-          toast(msg, r.errors && r.errors.length ? 'error' : 'success');
-        } catch (e) { toast(e.message, 'error'); }
-        btn.disabled = false;
-      };
       wrap.querySelectorAll('[data-crm-campus-save]').forEach(b => b.onclick = async () => {
         const id = b.dataset.crmCampusSave;
         const crmKey = wrap.querySelector(`[data-crm-key="${id}"]`).value.trim();
@@ -2544,16 +2535,21 @@ async function pageParameters() {
             !confirm('Girdiğiniz değer bir "Okul API Anahtarı" (okl_...) gibi görünüyor. Bu alana CRM\'in verdiği "CRM API Anahtarı" girilmelidir (okl_ ile başlamaz). Yine de kaydedilsin mi?')) {
           return;
         }
+        b.disabled = true;
         try {
-          await api('/parameters/integration/campus/' + id, {
+          const r = await api('/parameters/integration/campus/' + id, {
             method: 'PUT',
             body: {
               crm_api_key: crmKey,
               active: wrap.querySelector(`[data-crm-active="${id}"]`).checked,
             },
           });
-          toast('Kampüs CRM ayarı kaydedildi.', 'success'); loadIntegration();
+          let msg = 'Kampüs CRM ayarı kaydedildi.';
+          if (r.pull && r.pull.error) msg += ` Ancak aday çekilemedi: ${r.pull.error}`;
+          else if (r.pull) msg += ` ${r.pull.imported || 0} yeni, ${r.pull.updated || 0} güncel aday çekildi.`;
+          toast(msg, r.pull && r.pull.error ? 'error' : 'success'); loadIntegration();
         } catch (e) { toast(e.message, 'error'); }
+        b.disabled = false;
       });
       wrap.querySelectorAll('[data-crm-test]').forEach(b => b.onclick = async () => {
         const id = b.dataset.crmTest;
