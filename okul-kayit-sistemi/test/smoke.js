@@ -1019,6 +1019,22 @@ async function main() {
     }
   });
 
+  await test('Entegrasyon: Türkçe karaktere duyarsız arama (büyük/küçük + aksan)', async () => {
+    const r0 = await crmReq('POST', '/candidates', {
+      crm_id: 90060, ad: 'Şükrü', soyad: 'Güngör', tc_kimlik: '48210000038', sinif: '9',
+      veli_adi: 'Gülşen Öztürk', veli_telefon: '5324443322',
+      veli2_adi: 'Çağrı Öztürk', veli2_telefon: '5324443323',
+    });
+    assert.equal(r0.status, 201, JSON.stringify(r0.data));
+    // Öğrenci ve veli adları farklı büyük/küçük + aksansız yazımlarla bulunmalı
+    const cases = ['sukru', 'ŞÜKRÜ', 'güngör', 'GUNGOR', 'gülşen', 'GULSEN', 'cagri'];
+    for (const term of cases) {
+      const r = await req('GET', '/students/crm/candidates?search=' + encodeURIComponent(term), { token: campusToken });
+      const hit = r.data.candidates.find(x => x.crm_form_id === '90060');
+      assert.ok(hit, `Türkçe duyarsız arama "${term}" adayı bulmalı`);
+    }
+  });
+
   await test('Entegrasyon: eksik crm_id/ad reddedilir (400 hata alanı)', async () => {
     const r = await crmReq('POST', '/candidates', { ad: 'A' });
     assert.equal(r.status, 400);

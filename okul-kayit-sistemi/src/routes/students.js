@@ -57,10 +57,11 @@ router.get('/', requirePermission('student.view'), (req, res) => {
   if (q.grade) { where.push('s.grade = @grade'); params.grade = q.grade; }
   if (q.department_id) { where.push('s.department_id = @dept'); params.dept = Number(q.department_id); }
   if (q.search) {
-    where.push(`(s.first_name || ' ' || s.last_name LIKE @search
+    // fold(): Türkçe büyük/küçük harf ve aksana duyarsız arama
+    where.push(`(fold(s.first_name || ' ' || s.last_name) LIKE fold(@search)
       OR s.student_no LIKE @search OR s.tc_no LIKE @search
       OR EXISTS (SELECT 1 FROM parents p WHERE p.student_id = s.id
-                 AND (p.full_name LIKE @search OR p.phone LIKE @search)))`);
+                 AND (fold(p.full_name) LIKE fold(@search) OR p.phone LIKE @search)))`);
     params.search = `%${String(q.search).trim()}%`;
   }
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
@@ -312,36 +313,37 @@ router.post('/', requirePermission('student.create'), (req, res) => {
   res.json(result);
 });
 
-// Arama anında CRM'den taze aday çeker (en fazla 60 sn'de bir; hata olursa sessizce yerel havuzu kullanır).
+// Arama anında CRM'den taze aday çeker; hata olursa sessizce yerel havuzu kullanır.
 // Böylece kayıt personeli ayrı bir düğmeye basmadan güncel adayları görür.
-let lastCandidatePull = 0;
-async function refreshCandidatesIfStale() {
+// force=true throttle'ı atlar (sonuç boşsa yeni eklenen adayı hemen getirmek için).
+let lastCandidatePull = 0, lastForcedPull = 0;
+async function refreshCandidates(force) {
   if (process.env.NODE_ENV === 'test') return;
   const now = Date.now();
-  if (now - lastCandidatePull < 60000) return;
+  if (force) { if (now - lastForcedPull < 10000) return; lastForcedPull = now; }
+  else if (now - lastCandidatePull < 60000) return;
   lastCandidatePull = now;
   try {
     if (!getSetting('crm_base_url', '').trim()) return;
     const { pullCandidatesFromCrm } = require('../crm-notify');
-    await pullCandidatesFromCrm(null); // artımlı, tüm aktif kampüsler
+    // Tam çekim: CRM'e yeni eklenen adaylar da her zaman gelir (artımlı imleç kaçırmasın).
+    await pullCandidatesFromCrm(null, { full: true });
   } catch { /* sessiz: arama yerel havuzdan sürer */ }
 }
 
-// ---- CRM aday havuzu (kayıt ekranı için, oturum korumalı) ----
-router.get('/crm/candidates', requirePermission('enrollment.create'), async (req, res) => {
-  await refreshCandidatesIfStale();
-  const q = req.query || {};
+function buildCandidateSearch(q) {
   const where = [`status = 'BEKLIYOR'`];
   const params = {};
   if (q.search) {
     const raw = String(q.search).trim();
+    // fold(): Türkçe büyük/küçük harf ve aksana duyarsız eşleşme (Güngör = güngör = GÜNGÖR = gungor)
     const conds = [
-      `first_name || ' ' || last_name LIKE @s`, // öğrenci ad-soyad
-      `tc_no LIKE @s`,                           // öğrenci TC
-      `crm_form_id LIKE @s`,                     // CRM form no
-      `city || ' ' || district || ' ' || neighborhood LIKE @s`, // adres
+      `fold(first_name || ' ' || last_name) LIKE fold(@s)`, // öğrenci ad-soyad
+      `tc_no LIKE @s`,                                       // öğrenci TC
+      `crm_form_id LIKE @s`,                                 // CRM form no
+      `fold(city || ' ' || district || ' ' || neighborhood) LIKE fold(@s)`, // adres
       // Veli bilgileri (ad-soyad, e-posta, TC, telefon) parents_json içinde saklanır — hepsinde ara
-      `parents_json LIKE @s`,
+      `fold(parents_json) LIKE fold(@s)`,
     ];
     params.s = `%${raw}%`;
     // Telefonla arama: parents_json içindeki veli telefonlarını biçimden bağımsız (boşluk/tire/parantez
@@ -353,13 +355,29 @@ router.get('/crm/candidates', requirePermission('enrollment.create'), async (req
     }
     where.push('(' + conds.join(' OR ') + ')');
   }
+  return { where, params };
+}
+
+function runCandidateQuery(q) {
   // Kampüsler arası kayıt: CRM'de bir kampüse ait aday başka kampüse kayıt olabilir.
-  // Bu nedenle tüm kullanıcılar tüm adayları görebilir; campus_code yalnız bilgi amaçlıdır
-  // (adayın CRM'de hangi kampüste açıldığını gösterir, kaydı kısıtlamaz).
-  const rows = db.prepare(`
+  // Bu nedenle tüm kullanıcılar tüm adayları görebilir; campus_code yalnız bilgi amaçlıdır.
+  const { where, params } = buildCandidateSearch(q);
+  return db.prepare(`
     SELECT id, crm_form_id, campus_code, first_name, last_name, tc_no, birth_date, gender,
       grade, city, district, neighborhood, address, parents_json, notes, created_at
     FROM crm_candidates WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT 100`).all(params);
+}
+
+// ---- CRM aday havuzu (kayıt ekranı için, oturum korumalı) ----
+router.get('/crm/candidates', requirePermission('enrollment.create'), async (req, res) => {
+  const q = req.query || {};
+  await refreshCandidates(false);
+  let rows = runCandidateQuery(q);
+  // Aranan aday yerel havuzda yoksa, CRM'e yeni eklenmiş olabilir: bir kez zorla tazele ve tekrar dene.
+  if (q.search && rows.length === 0) {
+    await refreshCandidates(true);
+    rows = runCandidateQuery(q);
+  }
   res.json({
     candidates: rows.map(r => ({ ...r, parents: JSON.parse(r.parents_json || '[]') })),
   });

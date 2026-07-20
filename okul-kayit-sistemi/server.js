@@ -97,7 +97,7 @@ function startAutoPull() {
     if (!getSetting('crm_base_url', '').trim()) return;
     running = true;
     try {
-      const r = await pullCandidatesFromCrm(null); // artımlı, tüm aktif kampüsler
+      const r = await pullCandidatesFromCrm(null, { full: true }); // tam çekim: yeni adaylar kaçmasın
       if (r.imported || r.updated || r.cancelled) {
         console.log(`[CRM oto-çekim] eklendi=${r.imported} güncellendi=${r.updated} iptal=${r.cancelled}`);
       }

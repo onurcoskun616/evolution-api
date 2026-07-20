@@ -14,6 +14,23 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 db.pragma('synchronous = NORMAL');
 
+/**
+ * Türkçe-duyarsız arama katlaması: büyük/küçük harf ve Türkçe aksanları normalize eder.
+ * "Güngör", "güngör", "GÜNGÖR", "gungor" hepsi "gungor" olur; İ/I/ı → i.
+ * SQLite'a `fold(x)` olarak eklenir; aramalarda `fold(sütun) LIKE fold(@terim)` biçiminde kullanılır.
+ */
+function foldTr(s) {
+  return String(s == null ? '' : s)
+    .replace(/İ/g, 'i').replace(/I/g, 'i').replace(/ı/g, 'i')
+    .replace(/Ğ/g, 'g').replace(/ğ/g, 'g')
+    .replace(/Ü/g, 'u').replace(/ü/g, 'u')
+    .replace(/Ş/g, 's').replace(/ş/g, 's')
+    .replace(/Ö/g, 'o').replace(/ö/g, 'o')
+    .replace(/Ç/g, 'c').replace(/ç/g, 'c')
+    .toLowerCase();
+}
+db.function('fold', { deterministic: true }, foldTr);
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS campuses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -449,4 +466,4 @@ function setSetting(key, value) {
     .run(key, String(value ?? ''));
 }
 
-module.exports = { db, money, today, audit, DATA_DIR, getSetting, setSetting };
+module.exports = { db, money, today, audit, DATA_DIR, getSetting, setSetting, foldTr };
