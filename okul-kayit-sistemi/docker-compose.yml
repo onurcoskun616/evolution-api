@@ -4,7 +4,9 @@ services:
     container_name: okul-kayit-sistemi
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      # OKUL_BIND=127.0.0.1 (varsayılan) yalnız sunucu içinden erişim -> ters vekil önerilir.
+      # Doğrudan dışarıdan test için OKUL_BIND=0.0.0.0 verin.
+      - "${OKUL_BIND:-127.0.0.1}:${PORT:-8090}:3000"
     environment:
       NODE_ENV: production
       # Zorunlu: rastgele bir değerle doldurun (deploy.sh otomatik üretir)
