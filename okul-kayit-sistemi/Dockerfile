@@ -9,7 +9,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && apk del python3 make g++
 
-COPY server.js setup.js seed.js ./
+COPY server.js setup.js seed.js backup.js ./
 COPY src ./src
 COPY public ./public
 

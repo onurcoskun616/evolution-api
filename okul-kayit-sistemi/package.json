@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "setup": "node setup.js",
     "seed": "node seed.js",
+    "backup": "node backup.js",
     "test": "node test/smoke.js"
   },
   "license": "MIT",
