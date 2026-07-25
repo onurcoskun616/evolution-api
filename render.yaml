@@ -1,0 +1,30 @@
+# Render Blueprint - Okul Kayıt Sistemi
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: okul-kayit-sistemi
+    runtime: docker
+    rootDir: okul-kayit-sistemi
+    dockerfilePath: ./Dockerfile
+    # DİKKAT: free planda kalıcı disk YOKTUR; her yeniden başlatmada veritabanı sıfırlanır.
+    # Sadece deneme amaçlıdır. Kalıcı kullanım için: plan'ı "starter" yapın ve aşağıdaki
+    # "disk" bloğunun yorumunu kaldırın.
+    plan: free
+    region: frankfurt      # Türkiye'ye en yakın bölge
+    branch: claude/school-enrollment-system-07tbms
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OKUL_JWT_SECRET
+        generateValue: true   # Render güvenli rastgele değer üretir
+      - key: OKUL_ADMIN_SIFRE
+        generateValue: true   # admin şifresi: panelde Environment sekmesinden görünür
+      - key: OKUL_KAMPUSLER
+        value: "IKT:İkitelli OSB,IST:İstanbul OSB,ESN:Esenyurt,KRC:Kıraç,CRL:Çorlu"
+    # Kalıcı veri için (starter plan gerektirir) yorumu kaldırın:
+    # disk:
+    #   name: okul-data
+    #   mountPath: /data
+    #   sizeGB: 1

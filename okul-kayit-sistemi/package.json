@@ -1,0 +1,21 @@
+{
+  "name": "okul-kayit-sistemi",
+  "version": "1.0.0",
+  "description": "Okul Kayıt ve Tahsilat Takip Sistemi - Çok kampüslü okul yönetim yazılımı",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "setup": "node setup.js",
+    "seed": "node seed.js",
+    "backup": "node backup.js",
+    "test": "node test/smoke.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.11.1",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3"
+  }
+}
